@@ -122,3 +122,7 @@ class Job(Base):
         nullable=False,
     )
     attempts: Mapped[List["JobAttempt"]] = relationship(back_populates="job")
+    request_fingerprint: Mapped[Optional[str]] = mapped_column(
+    String(64),
+    nullable=True,
+)
