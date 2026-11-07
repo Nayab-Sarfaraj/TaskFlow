@@ -64,6 +64,7 @@ class Job(Base):
     )
     payload: Mapped[Dict[str, object]] = mapped_column(JSONB, nullable=False)
     result: Mapped[Optional[Dict[str, object]]] = mapped_column(JSONB, nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     client_id: Mapped[str] = mapped_column(String(100), nullable=False)
     status: Mapped[JobStatus] = mapped_column(
         SAEnum(
