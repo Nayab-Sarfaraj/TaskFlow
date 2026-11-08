@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import os
-from src.workers.groups import redis_client, group_exits, create_group
+from src.workers.groups import  create_group
 from src.config.redis import close_redis
 from src.db.database import SessionLocal
 from sqlalchemy import update
@@ -10,10 +10,12 @@ from src.models.jobs import Job, JobStatus
 from src.models.job_attempts import JobAttempt,JobAttemptStatus
 from datetime import datetime,timezone
 from dotenv import load_dotenv
+from redis.asyncio import Redis
 
 logger = logging.getLogger(__name__)
 
 load_dotenv()
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
 WORKER_ID = os.getenv("WORKER_ID")
 WORKER_CONCURRENCY = int(os.getenv("WORKER_CONCURRENCY", "3"))
@@ -21,7 +23,7 @@ if WORKER_CONCURRENCY < 1:
     raise ValueError("WORKER_CONCURRENCY must be greater than zero")
 
 
-async def process_messages(messages,worker_id):
+async def process_messages(messages,worker_id,redis_client):
     for stream_name, entries in messages:
         for message_id, fields in entries:
             job_id = None
@@ -207,15 +209,15 @@ async def process_messages(messages,worker_id):
                         job_id,
                     )
 
-async def execute_job(messages,semaphore,worker_id):
+async def execute_job(messages,semaphore,worker_id,redis_client):
     try:
-        await process_messages(messages,worker_id)
+        await process_messages(messages,worker_id,redis_client)
     finally:
         semaphore.release()
     
 
 
-async def worker(worker_id:int):
+async def worker(worker_id:int,redis_client):
     consumer=f"worker_{worker_id}"
     semaphore = asyncio.Semaphore(WORKER_CONCURRENCY)
     active_tasks = set()
@@ -235,7 +237,7 @@ async def worker(worker_id:int):
                 continue
             if messages:
                 task =asyncio.create_task(
-                    execute_job(messages,semaphore,worker_id)
+                    execute_job(messages,semaphore,worker_id,redis_client)
                 )
                 # this is to keep the track of active tasks okay and the task is discarded once the task is completed
                 active_tasks.add(task)
@@ -251,17 +253,15 @@ async def worker(worker_id:int):
 
 
 async def main():
-    logger.info(
-        "Process=%s Loop=%s Redis=%s",
-        os.getpid(),
-        id(asyncio.get_running_loop()),
-        id(redis_client),
+    
+    client = Redis.from_url(
+        REDIS_URL,
+        decode_responses=True
     )
-
     try:
-        await create_group(stream="job_events",group="workers")
+        await create_group(stream="job_events",group="workers",redis_client=client)
         # await asyncio.gather(*(worker(i+1) for i in range(WORKER_COUNT)))
-        await worker(WORKER_ID)
+        await worker(WORKER_ID,redis_client=client)
     finally:
         await close_redis()
 if __name__ == "__main__":
