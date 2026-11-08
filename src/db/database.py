@@ -10,7 +10,7 @@ DATABASE_URL = os.getenv(
     "postgresql+asyncpg://nayab:taskflow@localhost:5435/taskflow"
 )
 
-engine = create_async_engine(DATABASE_URL, echo=True)
+engine = create_async_engine(DATABASE_URL, echo=True,pool_size=3,max_overflow=1,pool_timeout=30)
 
 SessionLocal = async_sessionmaker(
     bind=engine,

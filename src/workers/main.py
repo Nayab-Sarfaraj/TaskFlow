@@ -1,16 +1,27 @@
 import asyncio
 import json
 import logging
+import os
 from src.workers.groups import redis_client, group_exits, create_group
+from src.config.redis import close_redis
 from src.db.database import SessionLocal
 from sqlalchemy import update
 from src.models.jobs import Job, JobStatus
 from src.models.job_attempts import JobAttempt,JobAttemptStatus
 from datetime import datetime,timezone
+from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
-async def process_messages(messages):
+load_dotenv()
+
+WORKER_ID = os.getenv("WORKER_ID")
+WORKER_CONCURRENCY = int(os.getenv("WORKER_CONCURRENCY", "3"))
+if WORKER_CONCURRENCY < 1:
+    raise ValueError("WORKER_CONCURRENCY must be greater than zero")
+
+
+async def process_messages(messages,worker_id):
     for stream_name, entries in messages:
         for message_id, fields in entries:
             job_id = None
@@ -41,7 +52,8 @@ async def process_messages(messages):
                     if updated_job is None:
                         await db.rollback()
                         logger.info(
-                            "Skipping job %s because it was not queued or does not exist",
+                            "Worker %s skipping job %s: it is not queued or does not exist",
+                            worker_id,
                             job_id,
                         )
                         await redis_client.xack(stream_name, "workers", message_id)
@@ -53,11 +65,19 @@ async def process_messages(messages):
                                 job_id=updated_job.id,
                                 attempt_number=attempt_number,
                                 status=JobAttemptStatus.PROCESSING,
-                                worker_id="1",
+                                worker_id=worker_id,
                             )
                         )
                         await db.commit()
                         processing_started = True
+
+                logger.info(
+                    "Worker %s started job %s (attempt %s, event %s)",
+                    worker_id,
+                    job_id,
+                    attempt_number,
+                    event_type,
+                )
 
                 # TODO: replace this with the actual job handler.
                 await asyncio.sleep(2)
@@ -89,17 +109,35 @@ async def process_messages(messages):
 
                     await db.commit()
                 logger.info(
-                    "Processing %s for job %s",
-                    event_type,
+                    "Worker %s completed job %s (attempt %s, event %s)",
+                    worker_id,
                     job_id,
+                    attempt_number,
+                    event_type,
                 )
 
                 # A missing/non-queued job is intentionally acknowledged because
                 # there is no valid work left for this message.
-                await redis_client.xack(stream_name, "workers", message_id)
+                try:
+                    await redis_client.xack(stream_name, "workers", message_id)
+                except Exception:
+                    # The job is already durably complete. An ACK failure must
+                    # not turn it into FAILED; leave the message pending for
+                    # later recovery/reconciliation.
+                    logger.exception(
+                        "Worker %s failed to ACK completed job %s (message %s)",
+                        worker_id,
+                        job_id,
+                        message_id,
+                    )
 
             except Exception as exc:
-                logger.exception("Failed to process message %s", message_id)
+                logger.exception(
+                    "Worker %s failed processing job %s (message %s)",
+                    worker_id,
+                    job_id,
+                    message_id,
+                )
 
                 if job_id is None:
                     continue
@@ -108,7 +146,9 @@ async def process_messages(messages):
                 # durable processing attempt to mark as failed. Do not ACK.
                 if not processing_started:
                     logger.error(
-                        "Job %s was not durably started; leaving message %s pending",
+                        "Worker %s could not durably start job %s; "
+                        "leaving message %s pending",
+                        worker_id,
                         job_id,
                         message_id,
                     )
@@ -153,32 +193,81 @@ async def process_messages(messages):
 
                     # Acknowledge only after both failure updates commit.
                     await redis_client.xack(stream_name, "workers", message_id)
+                    logger.error(
+                        "Worker %s marked job %s (attempt %s) as failed",
+                        worker_id,
+                        job_id,
+                        attempt_number,
+                    )
                 except Exception:
                     logger.exception(
-                        "Failed to persist failure for job %s; leaving message pending",
+                        "Worker %s failed to persist failure for job %s; "
+                        "leaving message pending",
+                        worker_id,
                         job_id,
                     )
 
-async def worker():
-    await create_group(stream="job_events",group="workers")
+async def execute_job(messages,semaphore,worker_id):
+    try:
+        await process_messages(messages,worker_id)
+    finally:
+        semaphore.release()
+    
+
+
+async def worker(worker_id:int):
+    consumer=f"worker_{worker_id}"
+    semaphore = asyncio.Semaphore(WORKER_CONCURRENCY)
+    active_tasks = set()
+    
     while True:
-        messages =await redis_client.xreadgroup(
-        groupname="workers",
-        consumername="worker_1",
-        streams={"job_events": ">"},
-        count=1,
-        block=5000
+        await semaphore.acquire()
+        try:
+            messages =await redis_client.xreadgroup(
+            groupname="workers",
+            consumername=consumer,
+            streams={"job_events": ">"},
+            count=1,
+            block=5000
+        )
+            if not messages:
+                semaphore.release()
+                continue
+            if messages:
+                task =asyncio.create_task(
+                    execute_job(messages,semaphore,worker_id)
+                )
+                # this is to keep the track of active tasks okay and the task is discarded once the task is completed
+                active_tasks.add(task)
+                task.add_done_callback(active_tasks.discard)
+               
+        except asyncio.CancelledError :
+            semaphore.release()
+            raise
+        except Exception:
+            semaphore.release()
+            logger.exception("Worker %s failed", consumer)
+            await asyncio.sleep(1)
+
+
+async def main():
+    logger.info(
+        "Process=%s Loop=%s Redis=%s",
+        os.getpid(),
+        id(asyncio.get_running_loop()),
+        id(redis_client),
     )
-        # print("got the job")
-        if messages:
-            await process_messages(messages)
 
-
-
+    try:
+        await create_group(stream="job_events",group="workers")
+        # await asyncio.gather(*(worker(i+1) for i in range(WORKER_COUNT)))
+        await worker(WORKER_ID)
+    finally:
+        await close_redis()
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     logger.info("Starting outbox publisher")
-    asyncio.run(worker())
+    asyncio.run(main())
