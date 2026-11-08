@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from src.db.database import SessionLocal
 from src.services import outbox_event as outbox_event_service
 from src.config.redis import get_redis
+from src.logging_config import configure_root_logger
 
 logger = logging.getLogger(__name__)
 redis_client = get_redis()
@@ -58,9 +59,6 @@ async def publisher():
 
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    configure_root_logger()
     logger.info("Starting outbox publisher")
     asyncio.run(publisher())

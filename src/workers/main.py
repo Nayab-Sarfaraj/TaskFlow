@@ -11,6 +11,7 @@ from src.models.job_attempts import JobAttempt,JobAttemptStatus
 from datetime import datetime,timezone
 from dotenv import load_dotenv
 from redis.asyncio import Redis
+from src.logging_config import configure_root_logger
 
 logger = logging.getLogger(__name__)
 
@@ -265,9 +266,10 @@ async def main():
     finally:
         await close_redis()
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    configure_root_logger()
+    logger.info(
+        "Starting worker %s with concurrency limit %s",
+        WORKER_ID,
+        WORKER_CONCURRENCY,
     )
-    logger.info("Starting outbox publisher")
     asyncio.run(main())
