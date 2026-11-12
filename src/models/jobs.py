@@ -126,7 +126,14 @@ class Job(Base):
         onupdate=func.now(),
         nullable=False,
     )
-    attempts: Mapped[List["JobAttempt"]] = relationship(back_populates="job")
+    attempts: Mapped[List["JobAttempt"]] = relationship(
+        back_populates="job",
+        foreign_keys="JobAttempt.job_id",
+    )
+    current_attempt: Mapped[Optional["JobAttempt"]] = relationship(
+        foreign_keys=[current_attempt_id],
+        post_update=True,
+    )
     request_fingerprint: Mapped[Optional[str]] = mapped_column(
     String(64),
     nullable=True,

@@ -9,7 +9,7 @@ from alembic import context
 import os 
 from dotenv import load_dotenv
 from src.db.database import Base
-from src.models import job_attempts, jobs, outbox_events, workers
+from src.models import job_attempts, job_outputs, jobs, outbox_events, workers
 
 load_dotenv()
 

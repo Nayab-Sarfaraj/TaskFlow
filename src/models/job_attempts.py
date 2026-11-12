@@ -57,4 +57,7 @@ class JobAttempt(Base):
     )
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
-    job: Mapped["Job"] = relationship(back_populates="attempts")
+    job: Mapped["Job"] = relationship(
+        back_populates="attempts",
+        foreign_keys=[job_id],
+    )

@@ -8,10 +8,12 @@ from src.db.database import SessionLocal
 from sqlalchemy import update
 from src.models.jobs import Job, JobStatus
 from src.models.job_attempts import JobAttempt,JobAttemptStatus
+from sqlalchemy.dialects.postgresql import insert
 from datetime import datetime,timezone
 from dotenv import load_dotenv
 from redis.asyncio import Redis
 from src.logging_config import configure_root_logger
+from src.models.job_outputs import JobOutput
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +25,9 @@ WORKER_CONCURRENCY = int(os.getenv("WORKER_CONCURRENCY", "3"))
 if WORKER_CONCURRENCY < 1:
     raise ValueError("WORKER_CONCURRENCY must be greater than zero")
 
+class ExecutionOwnershipLost(Exception):
+    pass
+
 
 async def process_messages(messages,worker_id,redis_client):
     for stream_name, entries in messages:
@@ -31,6 +36,7 @@ async def process_messages(messages,worker_id,redis_client):
             attempt_number = None
             attempt_id = None
             processing_started = False
+            operation_key=None
             try:
                 event = json.loads(fields["event"])
                 job_id = int(event["job_id"])
@@ -52,6 +58,7 @@ async def process_messages(messages,worker_id,redis_client):
                     )
                     result = await db.execute(statement)
                     updated_job = result.scalar_one_or_none()
+                   
 
                     if updated_job is None:
                         await db.rollback()
@@ -91,6 +98,19 @@ async def process_messages(messages,worker_id,redis_client):
 
                 # TODO: replace this with the actual job handler.
                 await asyncio.sleep(2)
+                async with SessionLocal() as db:
+                    operation_key=f"job:{job_id}:output"
+                    add_output_statement=(
+                        insert(JobOutput).values(
+                             job_id=job_id,
+                        operation_key=operation_key,
+                        result={"message": "Job completed"},
+                        ) .on_conflict_do_nothing(
+                            index_elements=["operation_key"]
+                        )
+                    )
+                    await db.execute(add_output_statement)
+                    await db.commit()
 
                 async with SessionLocal() as db:
                     attempt_statement = (
@@ -123,8 +143,9 @@ async def process_messages(messages,worker_id,redis_client):
                     job_result = await db.execute(job_statement)
 
                     if attempt_result.rowcount != 1 or job_result.rowcount != 1:
-                        raise RuntimeError(
-                            "Success update did not update exactly one attempt and job"
+                        
+                        raise ExecutionOwnershipLost(
+                            f"Worker {worker_id} lost ownership of job {job_id}"
                         )
 
                     await db.commit()
@@ -150,6 +171,15 @@ async def process_messages(messages,worker_id,redis_client):
                         job_id,
                         message_id,
                     )
+            except ExecutionOwnershipLost:
+                logger.warning(
+                    "Worker %s lost execution ownership of job %s",
+                    worker_id,
+                    job_id,
+                )
+                # Do not mark the job as FAILED.
+                # Leave this message pending for later reconciliation.
+                continue
 
             except Exception as exc:
                 logger.exception(
