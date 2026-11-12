@@ -25,7 +25,7 @@ async def submit_job(
     db: AsyncSession = Depends(get_db),
 ):
     try:
-        print(idempotency_key)
+        
         client_id = client["client_id"]
         return await job_service.create_job(db, job_request, client_id,idempotency_key)
     except IdempotencyConflictError:

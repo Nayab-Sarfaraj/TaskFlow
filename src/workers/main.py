@@ -29,6 +29,7 @@ async def process_messages(messages,worker_id,redis_client):
         for message_id, fields in entries:
             job_id = None
             attempt_number = None
+            attempt_id = None
             processing_started = False
             try:
                 event = json.loads(fields["event"])
@@ -63,13 +64,19 @@ async def process_messages(messages,worker_id,redis_client):
                         continue
                     else:
                         attempt_number = updated_job.attempt_count
-                        db.add(
-                            JobAttempt(
+                        attempt = JobAttempt(
                                 job_id=updated_job.id,
                                 attempt_number=attempt_number,
                                 status=JobAttemptStatus.PROCESSING,
                                 worker_id=worker_id,
                             )
+                        db.add(attempt)
+                        await db.flush()
+                        attempt_id = attempt.id
+                        await db.execute(
+                            update(Job)
+                            .where(Job.id == job_id, Job.status == JobStatus.PROCESSING)
+                            .values(current_attempt_id=attempt_id)
                         )
                         await db.commit()
                         processing_started = True
@@ -91,6 +98,7 @@ async def process_messages(messages,worker_id,redis_client):
                         .where(
                             JobAttempt.job_id == job_id,
                             JobAttempt.attempt_number == attempt_number,
+                            JobAttempt.id == attempt_id,
                             JobAttempt.status == JobAttemptStatus.PROCESSING,
                         )
                         .values(
@@ -101,7 +109,16 @@ async def process_messages(messages,worker_id,redis_client):
                     attempt_result = await db.execute(attempt_statement)
 
                     job_statement = (
-                        update(Job).where(Job.id==job_id,Job.status==JobStatus.PROCESSING).values(status=JobStatus.COMPLETED,completed_at=datetime.now(timezone.utc))
+                        update(Job)
+                        .where(
+                            Job.id == job_id,
+                            Job.status == JobStatus.PROCESSING,
+                            Job.current_attempt_id == attempt_id,
+                        )
+                        .values(
+                            status=JobStatus.COMPLETED,
+                            completed_at=datetime.now(timezone.utc),
+                        )
                     )
                     job_result = await db.execute(job_statement)
 
@@ -164,6 +181,8 @@ async def process_messages(messages,worker_id,redis_client):
                             update(JobAttempt)
                             .where(
                                 JobAttempt.job_id == job_id,
+                                JobAttempt.id == attempt_id,
+                                JobAttempt.attempt_number == attempt_number,
                                 JobAttempt.status == JobAttemptStatus.PROCESSING,
                             )
                             .values(
@@ -179,6 +198,7 @@ async def process_messages(messages,worker_id,redis_client):
                             .where(
                                 Job.id == job_id,
                                 Job.status == JobStatus.PROCESSING,
+                                Job.current_attempt_id == attempt_id,
                             )
                             .values(
                                 status=JobStatus.FAILED,

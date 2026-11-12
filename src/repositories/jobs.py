@@ -3,7 +3,6 @@ from src.models.outbox_events import OutboxEvent
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.schemas.jobs import job_submission_request
 from src.exceptions import JobCreationError, IdempotencyConflictError
-from src.utils.idempotency import is_request_parameter_matches
 from typing import Optional
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import delete, func, select, update

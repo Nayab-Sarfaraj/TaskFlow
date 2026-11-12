@@ -15,6 +15,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
     text,
+    ForeignKey,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -54,6 +55,9 @@ class Job(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    current_attempt_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("job_attempts.id"), nullable=True
+    )
     job_type: Mapped[JobType] = mapped_column(
         SAEnum(
             JobType,
