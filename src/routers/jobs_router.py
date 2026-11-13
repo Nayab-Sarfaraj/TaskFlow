@@ -1,15 +1,25 @@
-from fastapi import APIRouter,status,Header,HTTPException,Depends
-from src.schemas.jobs import job_submission_request,job_response,get_client_jobs_response
+from fastapi import APIRouter, status, Header, HTTPException, Depends
+from src.schemas.jobs import (
+    job_submission_request,
+    job_response,
+    get_client_jobs_response,
+)
 from src.dependencies.client import authenticate_client
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.db.database import get_db
 from src.services import jobs as job_service
-from src.exceptions import JobCreationError, IdempotencyConflictError
-from src.models.jobs import JobStatus,JobType
+from src.exceptions import (
+    IdempotencyConflictError,
+    JobCreationError,
+    JobRetryConflictError,
+    JobRetryError,
+    JobRetryNotFoundError,
+)
+from src.models.jobs import JobStatus, JobType
 from typing import Optional
 from fastapi import Query
-router = APIRouter()
 
+router = APIRouter()
 
 
 # router
@@ -20,14 +30,14 @@ router = APIRouter()
 )
 async def submit_job(
     job_request: job_submission_request,
-    idempotency_key:Optional[str]=Header(default=None),
+    idempotency_key: Optional[str] = Header(default=None),
     client: dict = Depends(authenticate_client),
     db: AsyncSession = Depends(get_db),
 ):
     try:
-        
+
         client_id = client["client_id"]
-        return await job_service.create_job(db, job_request, client_id,idempotency_key)
+        return await job_service.create_job(db, job_request, client_id, idempotency_key)
     except IdempotencyConflictError:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -38,13 +48,28 @@ async def submit_job(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Job could not be created.",
         )
-    
 
-@router.get("/",status_code=status.HTTP_200_OK,response_model=get_client_jobs_response)
-async def get_client_jobs(limit:int=Query(ge=0,le=100,default=10),offset:int=Query(default=0,ge=0),status:Optional[JobStatus]=None,job_type:Optional[JobType]=None,client: dict = Depends(authenticate_client),
-    db: AsyncSession = Depends(get_db)):
 
-    return await job_service.get_client_jobs(db,client_id=client["client_id"],limit=limit,offset=offset,status=status,job_type=job_type)
+@router.get(
+    "/", status_code=status.HTTP_200_OK, response_model=get_client_jobs_response
+)
+async def get_client_jobs(
+    limit: int = Query(ge=0, le=100, default=10),
+    offset: int = Query(default=0, ge=0),
+    status: Optional[JobStatus] = None,
+    job_type: Optional[JobType] = None,
+    client: dict = Depends(authenticate_client),
+    db: AsyncSession = Depends(get_db),
+):
+
+    return await job_service.get_client_jobs(
+        db,
+        client_id=client["client_id"],
+        limit=limit,
+        offset=offset,
+        status=status,
+        job_type=job_type,
+    )
 
 
 @router.get(
@@ -68,3 +93,36 @@ async def get_job(
             detail="Job not found.",
         )
     return job
+
+
+@router.post(
+    "/{id}/retry",
+    status_code=status.HTTP_200_OK,
+    response_model=job_response,
+)
+async def start_manual_retry(
+    id: int,
+    client: dict = Depends(authenticate_client),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        return await job_service.start_manual_retry(
+            id,
+            client_id=client["client_id"],
+            db=db,
+        )
+    except JobRetryNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Failed job not found for this client.",
+        )
+    except JobRetryConflictError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Job is not eligible for manual retry.",
+        )
+    except JobRetryError:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Job could not be retried.",
+        )

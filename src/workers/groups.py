@@ -2,6 +2,7 @@ from src.config.redis import get_redis
 import os
 from dotenv import load_dotenv
 import redis
+
 load_dotenv()
 # redis_client= get_redis()
 
@@ -14,14 +15,12 @@ load_dotenv()
 #             return False
 #         raise
 
-async def create_group(stream:str,group:str,redis_client):
+
+async def create_group(stream: str, group: str, redis_client):
     try:
         await redis_client.xgroup_create(
-            name=stream,
-            groupname=group,
-            id="0",
-            mkstream=True
+            name=stream, groupname=group, id="0", mkstream=True
         )
     except redis.exceptions.ResponseError as e:
-            if "BUSYGROUP" not in str(e):
-                raise
+        if "BUSYGROUP" not in str(e):
+            raise

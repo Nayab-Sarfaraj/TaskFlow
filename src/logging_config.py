@@ -156,11 +156,7 @@ class TaskFlowJSONFormatter(logging.Formatter):
 def set_log_context(**fields: Any) -> None:
     context = _LOG_CONTEXT.get().copy()
     context.update(
-        {
-            field: value
-            for field, value in fields.items()
-            if field in _CONTEXT_FIELDS
-        }
+        {field: value for field, value in fields.items() if field in _CONTEXT_FIELDS}
     )
     _LOG_CONTEXT.set(context)
 
@@ -198,7 +194,9 @@ def _create_file_handler(formatter: logging.Formatter) -> logging.Handler:
 def configure_root_logger() -> logging.Logger:
     invalid_handlers = LOG_HANDLERS - {"console", "file"}
     if invalid_handlers:
-        raise ValueError(f"Unsupported LOG_HANDLERS: {', '.join(sorted(invalid_handlers))}")
+        raise ValueError(
+            f"Unsupported LOG_HANDLERS: {', '.join(sorted(invalid_handlers))}"
+        )
     if MAX_LOG_SIZE < 1:
         raise ValueError("MAX_LOG_SIZE must be greater than zero")
     if BACKUP_COUNT < 0:

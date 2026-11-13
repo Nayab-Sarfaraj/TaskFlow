@@ -47,3 +47,5 @@ logs/
 .cache/
 
 pip freeze > requirements.txt
+
+.venv/bin/black src tests

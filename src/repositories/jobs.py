@@ -1,14 +1,30 @@
-from src.models.jobs import Job 
+from datetime import datetime, timezone
+
+from src.models.jobs import Job
+from src.models.job_attempts import JobAttempt
 from src.models.outbox_events import OutboxEvent
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.schemas.jobs import job_submission_request
-from src.exceptions import JobCreationError, IdempotencyConflictError
+from src.exceptions import (
+    IdempotencyConflictError,
+    JobCreationError,
+    JobRetryConflictError,
+    JobRetryError,
+)
 from typing import Optional
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import delete, func, select, update
-from src.models.jobs import JobStatus,JobType
+from src.models.jobs import JobStatus, JobType
 from src.utils.hash import generate_request_fingerprint
-async def create_job(db: AsyncSession, job: job_submission_request, client_id: str,idempotency_key:Optional[str]=None):
+from src.config.retry import RetryPolicy
+
+
+async def create_job(
+    db: AsyncSession,
+    job: job_submission_request,
+    client_id: str,
+    idempotency_key: Optional[str] = None,
+):
     fingerprint = generate_request_fingerprint(job)
     try:
         new_job = Job(
@@ -17,10 +33,8 @@ async def create_job(db: AsyncSession, job: job_submission_request, client_id: s
             priority=job.priority,
             max_attempts=job.max_retries + 1,
             client_id=client_id,
-            request_fingerprint=fingerprint
+            request_fingerprint=fingerprint,
         )
-     
-
 
         if job.scheduled_at is not None:
             new_job.scheduled_at = job.scheduled_at
@@ -28,7 +42,6 @@ async def create_job(db: AsyncSession, job: job_submission_request, client_id: s
 
         db.add(new_job)
         await db.flush()
-        
 
         outbox_event = OutboxEvent(
             aggregate_id=new_job.id,
@@ -65,7 +78,14 @@ async def create_job(db: AsyncSession, job: job_submission_request, client_id: s
         raise JobCreationError from exc
 
 
-async def get_client_jobs(db: AsyncSession, client_id: str,limit:int,offset:int,status:Optional[JobStatus]=None,job_type:Optional[JobType]=None,):
+async def get_client_jobs(
+    db: AsyncSession,
+    client_id: str,
+    limit: int,
+    offset: int,
+    status: Optional[JobStatus] = None,
+    job_type: Optional[JobType] = None,
+):
     filters = [Job.client_id == client_id]
     if status is not None:
         filters.append(Job.status == status)
@@ -96,4 +116,62 @@ async def get_job(db: AsyncSession, job_id: int, client_id: str):
     )
     result = await db.execute(statement)
     return result.scalar_one_or_none()
-    
+
+
+async def start_manual_retry(
+    db: AsyncSession,
+    job_id: int,
+    client_id: str,
+):
+    try:
+        statement = (
+            update(Job)
+            .where(
+                Job.id == job_id,
+                Job.client_id == client_id,
+                Job.status == JobStatus.FAILED,
+            )
+            .values(
+                status=JobStatus.QUEUED,
+                scheduled_at=datetime.now(timezone.utc),
+                error_message=None,
+                current_attempt_id=None,
+                attempt_count=0,
+                retry_cycle_start=(
+                    select(func.coalesce(func.max(JobAttempt.attempt_number), 0))
+                    .where(JobAttempt.job_id == job_id)
+                    .scalar_subquery()
+                ),
+            )
+            .returning(Job)
+        )
+        result = await db.execute(statement)
+        updated_job = result.scalar_one_or_none()
+
+        if updated_job is None:
+            await db.rollback()
+            existing_job_statement = select(Job).where(
+                Job.id == job_id,
+                Job.client_id == client_id,
+            )
+            existing_job_result = await db.execute(existing_job_statement)
+            existing_job = existing_job_result.scalar_one_or_none()
+            if existing_job is not None:
+                raise JobRetryConflictError
+            return None
+
+        db.add(
+            OutboxEvent(
+                aggregate_id=updated_job.id,
+                event_type="job.created",
+                payload=updated_job.payload,
+            )
+        )
+        await db.commit()
+        await db.refresh(updated_job)
+        return updated_job
+    except JobRetryConflictError:
+        raise
+    except Exception as exc:
+        await db.rollback()
+        raise JobRetryError from exc
