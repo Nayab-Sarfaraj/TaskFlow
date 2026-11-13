@@ -15,6 +15,4 @@ def generate_request_fingerprint(
         separators=(",", ":"),
     )
 
-    return hashlib.sha256(
-        canonical_json.encode("utf-8")
-    ).hexdigest()
+    return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()

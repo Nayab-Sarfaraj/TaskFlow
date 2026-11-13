@@ -9,19 +9,16 @@ clients = [
 ]
 
 
- # client id assingment for now just use a random client id 
-    # TODO : replace with actual client and api key implementation in later stage
+# client id assingment for now just use a random client id
+# TODO : replace with actual client and api key implementation in later stage
+
 
 def authenticate_client(x_api_key: str = Header(...)):
-    client = next(
-        (c for c in clients if c["api_key"] == x_api_key),
-        None
-    )
+    client = next((c for c in clients if c["api_key"] == x_api_key), None)
 
     if client is None:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid API key"
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key"
         )
 
     return client

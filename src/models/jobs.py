@@ -92,6 +92,12 @@ class Job(Base):
         server_default=text("0"),
         nullable=False,
     )
+    retry_cycle_start: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        server_default=text("0"),
+        nullable=False,
+    )
     max_attempts: Mapped[int] = mapped_column(
         Integer,
         default=3,
@@ -99,11 +105,11 @@ class Job(Base):
         nullable=False,
     )
     idempotency_key: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
-    scheduled_at: Mapped[datetime] = mapped_column(
+    scheduled_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
         server_default=func.now(),
-        nullable=False,
+        nullable=True,
     )
     started_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True),
@@ -135,6 +141,6 @@ class Job(Base):
         post_update=True,
     )
     request_fingerprint: Mapped[Optional[str]] = mapped_column(
-    String(64),
-    nullable=True,
-)
+        String(64),
+        nullable=True,
+    )

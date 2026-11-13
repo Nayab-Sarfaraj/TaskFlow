@@ -1,8 +1,9 @@
 from datetime import datetime, timezone
 from typing import Any
-from pydantic import BaseModel, Field, field_validator,ConfigDict
-from src.models.jobs import JobType,JobStatus
-from typing import Optional,List
+from pydantic import BaseModel, Field, field_validator, ConfigDict
+from src.models.jobs import JobType, JobStatus
+from typing import Optional, List
+
 
 class job_submission_request(BaseModel):
     job_type: JobType
@@ -23,6 +24,7 @@ class job_submission_request(BaseModel):
 
         return value
 
+
 class job_response(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -36,8 +38,9 @@ class job_response(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+
 class get_client_jobs_response(BaseModel):
-    items:List[job_response]
-    offset:int
-    limit:int
-    total:int
+    items: List[job_response]
+    offset: int
+    limit: int
+    total: int

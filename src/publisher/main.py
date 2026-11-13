@@ -53,7 +53,6 @@ async def publisher():
             except Exception as e:
                 await db.rollback()
                 logger.exception("Outbox publisher failed")
-                
 
         await asyncio.sleep(1)
 

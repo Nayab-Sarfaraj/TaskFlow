@@ -1,7 +1,7 @@
-
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import delete, func, select, update
 from src.models.outbox_events import OutboxEvent
+
 
 async def fetch_unpublished_events(db: AsyncSession):
     statement = (
@@ -13,4 +13,3 @@ async def fetch_unpublished_events(db: AsyncSession):
     )
     result = await db.execute(statement)
     return result.scalars().all()
-    

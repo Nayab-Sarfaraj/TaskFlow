@@ -2,18 +2,25 @@ import asyncio
 import json
 import logging
 import os
-from src.workers.groups import  create_group
+from src.workers.groups import create_group
 from src.config.redis import close_redis
 from src.db.database import SessionLocal
-from sqlalchemy import update
-from src.models.jobs import Job, JobStatus
-from src.models.job_attempts import JobAttempt,JobAttemptStatus
+from sqlalchemy import or_, update
+from src.models.jobs import Job, JobStatus, JobType
+from src.models.job_attempts import JobAttempt, JobAttemptStatus
 from sqlalchemy.dialects.postgresql import insert
-from datetime import datetime,timezone
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 from redis.asyncio import Redis
 from src.logging_config import configure_root_logger
 from src.models.job_outputs import JobOutput
+from src.config.retry import RetryPolicy
+from src.utils.failure_classifier import is_retryable
+from src.utils.retry_backoff import (
+    calculate_next_execution_time,
+    get_delay,
+    should_retry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,18 +32,21 @@ WORKER_CONCURRENCY = int(os.getenv("WORKER_CONCURRENCY", "3"))
 if WORKER_CONCURRENCY < 1:
     raise ValueError("WORKER_CONCURRENCY must be greater than zero")
 
+
 class ExecutionOwnershipLost(Exception):
     pass
 
 
-async def process_messages(messages,worker_id,redis_client):
+async def process_messages(messages, worker_id, redis_client):
     for stream_name, entries in messages:
         for message_id, fields in entries:
             job_id = None
             attempt_number = None
+            historical_attempt_number = None
             attempt_id = None
             processing_started = False
-            operation_key=None
+            operation_key = None
+            job_type = None
             try:
                 event = json.loads(fields["event"])
                 job_id = int(event["job_id"])
@@ -48,17 +58,20 @@ async def process_messages(messages,worker_id,redis_client):
                         .where(
                             Job.id == job_id,
                             Job.status == JobStatus.QUEUED,
+                            or_(
+                                Job.scheduled_at.is_(None),
+                                Job.scheduled_at <= datetime.now(timezone.utc),
+                            ),
                         )
                         .values(
                             status=JobStatus.PROCESSING,
                             attempt_count=Job.attempt_count + 1,
-                            started_at=datetime.now(timezone.utc)
+                            started_at=datetime.now(timezone.utc),
                         )
                         .returning(Job)
                     )
                     result = await db.execute(statement)
                     updated_job = result.scalar_one_or_none()
-                   
 
                     if updated_job is None:
                         await db.rollback()
@@ -70,13 +83,17 @@ async def process_messages(messages,worker_id,redis_client):
                         await redis_client.xack(stream_name, "workers", message_id)
                         continue
                     else:
+                        job_type = updated_job.job_type
                         attempt_number = updated_job.attempt_count
+                        historical_attempt_number = (
+                            updated_job.retry_cycle_start + attempt_number
+                        )
                         attempt = JobAttempt(
-                                job_id=updated_job.id,
-                                attempt_number=attempt_number,
-                                status=JobAttemptStatus.PROCESSING,
-                                worker_id=worker_id,
-                            )
+                            job_id=updated_job.id,
+                            attempt_number=historical_attempt_number,
+                            status=JobAttemptStatus.PROCESSING,
+                            worker_id=worker_id,
+                        )
                         db.add(attempt)
                         await db.flush()
                         attempt_id = attempt.id
@@ -98,26 +115,13 @@ async def process_messages(messages,worker_id,redis_client):
 
                 # TODO: replace this with the actual job handler.
                 await asyncio.sleep(2)
-                async with SessionLocal() as db:
-                    operation_key=f"job:{job_id}:output"
-                    add_output_statement=(
-                        insert(JobOutput).values(
-                             job_id=job_id,
-                        operation_key=operation_key,
-                        result={"message": "Job completed"},
-                        ) .on_conflict_do_nothing(
-                            index_elements=["operation_key"]
-                        )
-                    )
-                    await db.execute(add_output_statement)
-                    await db.commit()
 
                 async with SessionLocal() as db:
                     attempt_statement = (
                         update(JobAttempt)
                         .where(
                             JobAttempt.job_id == job_id,
-                            JobAttempt.attempt_number == attempt_number,
+                            JobAttempt.attempt_number == historical_attempt_number,
                             JobAttempt.id == attempt_id,
                             JobAttempt.status == JobAttemptStatus.PROCESSING,
                         )
@@ -143,10 +147,22 @@ async def process_messages(messages,worker_id,redis_client):
                     job_result = await db.execute(job_statement)
 
                     if attempt_result.rowcount != 1 or job_result.rowcount != 1:
-                        
+
                         raise ExecutionOwnershipLost(
                             f"Worker {worker_id} lost ownership of job {job_id}"
                         )
+
+                    operation_key = f"job:{job_id}:output"
+                    add_output_statement = (
+                        insert(JobOutput)
+                        .values(
+                            job_id=job_id,
+                            operation_key=operation_key,
+                            result={"message": "Job completed"},
+                        )
+                        .on_conflict_do_nothing(index_elements=["operation_key"])
+                    )
+                    await db.execute(add_output_statement)
 
                     await db.commit()
                 logger.info(
@@ -205,44 +221,149 @@ async def process_messages(messages,worker_id,redis_client):
                     continue
 
                 try:
+                    policy = RetryPolicy(job_type=job_type)
+                    is_retryable_error = is_retryable(exception=exc)
                     error_message = str(exc)
-                    async with SessionLocal() as db:
-                        attempt_statement = (
-                            update(JobAttempt)
-                            .where(
-                                JobAttempt.job_id == job_id,
-                                JobAttempt.id == attempt_id,
-                                JobAttempt.attempt_number == attempt_number,
-                                JobAttempt.status == JobAttemptStatus.PROCESSING,
-                            )
-                            .values(
-                                status=JobAttemptStatus.FAILED,
-                                error_message=error_message,
-                                finished_at=datetime.now(timezone.utc),
-                            )
+                    if is_retryable_error:
+                        can_retry = should_retry(
+                            attempt_number=attempt_number, retry_policy=policy
                         )
-                        attempt_result = await db.execute(attempt_statement)
-
-                        job_statement = (
-                            update(Job)
-                            .where(
-                                Job.id == job_id,
-                                Job.status == JobStatus.PROCESSING,
-                                Job.current_attempt_id == attempt_id,
+                        if can_retry:
+                            delay = get_delay(
+                                attempt_number=attempt_number, retry_policy=policy
                             )
-                            .values(
-                                status=JobStatus.FAILED,
-                                error_message=error_message,
+                            next_execution_time = calculate_next_execution_time(
+                                delay=delay
                             )
-                        )
-                        job_result = await db.execute(job_statement)
+                            async with SessionLocal() as db:
+                                attempt_statement = (
+                                    update(JobAttempt)
+                                    .where(
+                                        JobAttempt.job_id == job_id,
+                                        JobAttempt.id == attempt_id,
+                                        JobAttempt.attempt_number
+                                        == historical_attempt_number,
+                                        JobAttempt.status
+                                        == JobAttemptStatus.PROCESSING,
+                                    )
+                                    .values(
+                                        status=JobAttemptStatus.FAILED,
+                                        error_message=error_message,
+                                        finished_at=datetime.now(timezone.utc),
+                                    )
+                                )
+                                attempt_result = await db.execute(attempt_statement)
 
-                        if attempt_result.rowcount != 1 or job_result.rowcount != 1:
-                            raise RuntimeError(
-                                "Failure update did not update exactly one attempt and job"
+                                job_statement = (
+                                    update(Job)
+                                    .where(
+                                        Job.id == job_id,
+                                        Job.status == JobStatus.PROCESSING,
+                                        Job.current_attempt_id == attempt_id,
+                                    )
+                                    .values(
+                                        status=JobStatus.RETRYING,
+                                        error_message=error_message,
+                                        scheduled_at=next_execution_time,
+                                    )
+                                )
+                                job_result = await db.execute(job_statement)
+
+                                if (
+                                    attempt_result.rowcount != 1
+                                    or job_result.rowcount != 1
+                                ):
+                                    raise RuntimeError(
+                                        "Failure update did not update exactly one attempt and job"
+                                    )
+
+                                await db.commit()
+
+                        else:
+                            async with SessionLocal() as db:
+                                attempt_statement = (
+                                    update(JobAttempt)
+                                    .where(
+                                        JobAttempt.job_id == job_id,
+                                        JobAttempt.id == attempt_id,
+                                        JobAttempt.attempt_number
+                                        == historical_attempt_number,
+                                        JobAttempt.status
+                                        == JobAttemptStatus.PROCESSING,
+                                    )
+                                    .values(
+                                        status=JobAttemptStatus.FAILED,
+                                        error_message=error_message,
+                                        finished_at=datetime.now(timezone.utc),
+                                    )
+                                )
+                                attempt_result = await db.execute(attempt_statement)
+
+                                job_statement = (
+                                    update(Job)
+                                    .where(
+                                        Job.id == job_id,
+                                        Job.status == JobStatus.PROCESSING,
+                                        Job.current_attempt_id == attempt_id,
+                                    )
+                                    .values(
+                                        status=JobStatus.FAILED,
+                                        error_message=error_message,
+                                        scheduled_at=None,
+                                    )
+                                )
+                                job_result = await db.execute(job_statement)
+
+                                if (
+                                    attempt_result.rowcount != 1
+                                    or job_result.rowcount != 1
+                                ):
+                                    raise RuntimeError(
+                                        "Failure update did not update exactly one attempt and job"
+                                    )
+
+                                await db.commit()
+
+                    else:
+                        async with SessionLocal() as db:
+                            attempt_statement = (
+                                update(JobAttempt)
+                                .where(
+                                    JobAttempt.job_id == job_id,
+                                    JobAttempt.id == attempt_id,
+                                    JobAttempt.attempt_number
+                                    == historical_attempt_number,
+                                    JobAttempt.status == JobAttemptStatus.PROCESSING,
+                                )
+                                .values(
+                                    status=JobAttemptStatus.FAILED,
+                                    error_message=error_message,
+                                    finished_at=datetime.now(timezone.utc),
+                                )
                             )
+                            attempt_result = await db.execute(attempt_statement)
 
-                        await db.commit()
+                            job_statement = (
+                                update(Job)
+                                .where(
+                                    Job.id == job_id,
+                                    Job.status == JobStatus.PROCESSING,
+                                    Job.current_attempt_id == attempt_id,
+                                )
+                                .values(
+                                    status=JobStatus.FAILED,
+                                    error_message=error_message,
+                                    scheduled_at=None,
+                                )
+                            )
+                            job_result = await db.execute(job_statement)
+
+                            if attempt_result.rowcount != 1 or job_result.rowcount != 1:
+                                raise RuntimeError(
+                                    "Failure update did not update exactly one attempt and job"
+                                )
+
+                            await db.commit()
 
                     # Acknowledge only after both failure updates commit.
                     await redis_client.xack(stream_name, "workers", message_id)
@@ -260,41 +381,41 @@ async def process_messages(messages,worker_id,redis_client):
                         job_id,
                     )
 
-async def execute_job(messages,semaphore,worker_id,redis_client):
+
+async def execute_job(messages, semaphore, worker_id, redis_client):
     try:
-        await process_messages(messages,worker_id,redis_client)
+        await process_messages(messages, worker_id, redis_client)
     finally:
         semaphore.release()
-    
 
 
-async def worker(worker_id:int,redis_client):
-    consumer=f"worker_{worker_id}"
+async def worker(worker_id: int, redis_client):
+    consumer = f"worker_{worker_id}"
     semaphore = asyncio.Semaphore(WORKER_CONCURRENCY)
     active_tasks = set()
-    
+
     while True:
         await semaphore.acquire()
         try:
-            messages =await redis_client.xreadgroup(
-            groupname="workers",
-            consumername=consumer,
-            streams={"job_events": ">"},
-            count=1,
-            block=5000
-        )
+            messages = await redis_client.xreadgroup(
+                groupname="workers",
+                consumername=consumer,
+                streams={"job_events": ">"},
+                count=1,
+                block=5000,
+            )
             if not messages:
                 semaphore.release()
                 continue
             if messages:
-                task =asyncio.create_task(
-                    execute_job(messages,semaphore,worker_id,redis_client)
+                task = asyncio.create_task(
+                    execute_job(messages, semaphore, worker_id, redis_client)
                 )
                 # this is to keep the track of active tasks okay and the task is discarded once the task is completed
                 active_tasks.add(task)
                 task.add_done_callback(active_tasks.discard)
-               
-        except asyncio.CancelledError :
+
+        except asyncio.CancelledError:
             semaphore.release()
             raise
         except Exception:
@@ -304,17 +425,16 @@ async def worker(worker_id:int,redis_client):
 
 
 async def main():
-    
-    client = Redis.from_url(
-        REDIS_URL,
-        decode_responses=True
-    )
+
+    client = Redis.from_url(REDIS_URL, decode_responses=True)
     try:
-        await create_group(stream="job_events",group="workers",redis_client=client)
+        await create_group(stream="job_events", group="workers", redis_client=client)
         # await asyncio.gather(*(worker(i+1) for i in range(WORKER_COUNT)))
-        await worker(WORKER_ID,redis_client=client)
+        await worker(WORKER_ID, redis_client=client)
     finally:
         await close_redis()
+
+
 if __name__ == "__main__":
     configure_root_logger()
     logger.info(

@@ -6,20 +6,20 @@ from sqlalchemy.orm import DeclarativeBase
 load_dotenv()
 
 DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql+asyncpg://nayab:taskflow@localhost:5435/taskflow"
+    "DATABASE_URL", "postgresql+asyncpg://nayab:taskflow@localhost:5435/taskflow"
 )
 
-engine = create_async_engine(DATABASE_URL, echo=True,pool_size=3,max_overflow=1,pool_timeout=30)
-
-SessionLocal = async_sessionmaker(
-    bind=engine,
-    expire_on_commit=False
+engine = create_async_engine(
+    DATABASE_URL, echo=True, pool_size=3, max_overflow=1, pool_timeout=30
 )
+
+SessionLocal = async_sessionmaker(bind=engine, expire_on_commit=False)
+
 
 async def get_db():
     async with SessionLocal() as db:
         yield db
+
 
 class Base(DeclarativeBase):
     pass
