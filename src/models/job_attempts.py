@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
 class JobAttemptStatus(str, Enum):
     PROCESSING = "processing"
+    INTERRUPTED = "interrupted"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
 

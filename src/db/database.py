@@ -10,7 +10,7 @@ DATABASE_URL = os.getenv(
 )
 
 engine = create_async_engine(
-    DATABASE_URL, echo=True, pool_size=3, max_overflow=1, pool_timeout=30
+    DATABASE_URL, echo=False, pool_size=3, max_overflow=1, pool_timeout=30
 )
 
 SessionLocal = async_sessionmaker(bind=engine, expire_on_commit=False)
