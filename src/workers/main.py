@@ -16,8 +16,13 @@ from dotenv import load_dotenv
 from redis.asyncio import Redis
 from src.logging_config import configure_root_logger
 from src.models.job_outputs import JobOutput
+from src.workers.email import send_bulk_email
+from src.workers.video import process_video
+from src.workers.report import process_report
+from src.workers.scraping import process_scraping
 from src.config.retry import RetryPolicy
 from src.utils.failure_classifier import is_retryable
+from src.utils.failure_classifier import RetryableEmailError
 from src.utils.retry_backoff import (
     calculate_next_execution_time,
     get_delay,
@@ -45,6 +50,9 @@ WORKER_CONCURRENCY = int(os.getenv("WORKER_CONCURRENCY", "3"))
 WORKER_SHUTDOWN_GRACE_PERIOD = float(
     os.getenv("WORKER_SHUTDOWN_GRACE_PERIOD", "30")
 )
+MAX_JOB_EXECUTION_SECONDS = float(
+    os.getenv("MAX_JOB_EXECUTION_SECONDS", "300")
+)
 PENDING_RECOVERY_INTERVAL = 15
 PENDING_IDLE_TIMEOUT_MS = 60_000
 if WORKER_CONCURRENCY < 1:
@@ -56,8 +64,24 @@ shutdown_signal=asyncio.Event()
 class ExecutionOwnershipLost(Exception):
     pass
 
-async def handle_job(job_id,attempt_id):
-    await asyncio.sleep(120)
+async def handle_job(job: Job, job_attempt: JobAttempt):
+    async def run_handler():
+        if job.job_type == JobType.EMAIL:
+            return await send_bulk_email(job=job, job_attempt=job_attempt)
+        if job.job_type == JobType.VIDEO:
+            return await process_video(job=job, job_attempt=job_attempt)
+        if job.job_type == JobType.REPORT:
+            return await process_report(job=job, job_attempt=job_attempt)
+        if job.job_type == JobType.SCRAPING:
+            return await process_scraping(job=job, job_attempt=job_attempt)
+
+        # Placeholder for other job handlers until they are implemented.
+        await asyncio.sleep(120)
+
+    return await asyncio.wait_for(
+        run_handler(),
+        timeout=MAX_JOB_EXECUTION_SECONDS,
+    )
 
 
 async def process_messages(messages, worker_id, redis_client):
@@ -72,6 +96,7 @@ async def process_messages(messages, worker_id, redis_client):
             job_type = None
             lease_renewal_task = None
             job_task = None
+            execution_result = None
             try:
                 event = json.loads(fields["event"])
                 job_id = int(event["job_id"])
@@ -141,8 +166,9 @@ async def process_messages(messages, worker_id, redis_client):
                     event_type,
                 )
                 lease_renewal_task=asyncio.create_task(lease_renewal(job_id=job_id,attempt_id=attempt_id))
-                # TODO: replace this with the actual job handler.
-                job_task=asyncio.create_task(handle_job(job_id=job_id,attempt_id=attempt_id))
+                job_task = asyncio.create_task(
+                    handle_job(job=updated_job, job_attempt=attempt)
+                )
 
                 done, pending = await asyncio.wait(
                     {job_task, lease_renewal_task},
@@ -160,7 +186,7 @@ async def process_messages(messages, worker_id, redis_client):
 
                 if job_task in done:
                     # Job completed first.
-                    await job_task
+                    execution_result = await job_task
                     lease_renewal_task.cancel()
                     await asyncio.gather(
                         lease_renewal_task,
@@ -210,8 +236,10 @@ async def process_messages(messages, worker_id, redis_client):
                         insert(JobOutput)
                         .values(
                             job_id=job_id,
+                            job_type=job_type,
                             operation_key=operation_key,
-                            result={"message": "Job completed"},
+                            result=execution_result
+                            or {"message": "Job completed"},
                         )
                         .on_conflict_do_nothing(index_elements=["operation_key"])
                     )
@@ -341,6 +369,9 @@ async def process_messages(messages, worker_id, redis_client):
                                 await db.commit()
 
                         else:
+                            partial_email_completion = isinstance(
+                                exc, RetryableEmailError
+                            )
                             async with SessionLocal() as db:
                                 attempt_statement = (
                                     update(JobAttempt)
@@ -371,8 +402,16 @@ async def process_messages(messages, worker_id, redis_client):
                                         Job.lease_expires_at > func.now(),  
                                     )
                                     .values(
-                                        status=JobStatus.FAILED,
-                                        error_message=error_message,
+                                        status=(
+                                            JobStatus.COMPLETED
+                                            if partial_email_completion
+                                            else JobStatus.FAILED
+                                        ),
+                                        error_message=(
+                                            None
+                                            if partial_email_completion
+                                            else error_message
+                                        ),
                                         scheduled_at=None,
                                         lease_expires_at=None
                                     )
@@ -385,6 +424,27 @@ async def process_messages(messages, worker_id, redis_client):
                                 ):
                                     raise RuntimeError(
                                         "Failure update did not update exactly one attempt and job"
+                                    )
+
+                                if (
+                                    partial_email_completion
+                                    and job_type == JobType.EMAIL
+                                ):
+                                    await db.execute(
+                                        insert(JobOutput)
+                                        .values(
+                                            job_id=job_id,
+                                            job_type=job_type,
+                                            operation_key=f"job:{job_id}:output",
+                                            result=exc.result,
+                                        )
+                                        .on_conflict_do_update(
+                                            index_elements=["operation_key"],
+                                            set_={
+                                                "job_type": job_type,
+                                                "result": exc.result,
+                                            },
+                                        )
                                     )
 
                                 await db.commit()
@@ -435,8 +495,8 @@ async def process_messages(messages, worker_id, redis_client):
 
                     # Acknowledge only after both failure updates commit.
                     await redis_client.xack(stream_name, "workers", message_id)
-                    logger.error(
-                        "Worker %s marked job %s (attempt %s) as failed",
+                    logger.info(
+                        "Worker %s finalized job %s (attempt %s) after delivery handling",
                         worker_id,
                         job_id,
                         attempt_number,

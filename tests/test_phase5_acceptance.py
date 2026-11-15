@@ -416,7 +416,12 @@ async def test_10_output_insertion_is_idempotent(db_engine, db_session):
         async with sessions() as session:
             statement = (
                 insert(JobOutput)
-                .values(job_id=job.id, operation_key=operation_key, result=result)
+                .values(
+                    job_id=job.id,
+                    job_type=job.job_type,
+                    operation_key=operation_key,
+                    result=result,
+                )
                 .on_conflict_do_nothing(index_elements=["operation_key"])
             )
             await session.execute(statement)
@@ -453,7 +458,12 @@ async def test_11_output_and_completion_are_atomic(db_session):
     await db_session.commit()
     try:
         db_session.add(
-            JobOutput(job_id=job.id, operation_key=key("atomic"), result={"ok": True})
+            JobOutput(
+                job_id=job.id,
+                job_type=job.job_type,
+                operation_key=key("atomic"),
+                result={"ok": True},
+            )
         )
         await db_session.execute(
             update(Job)

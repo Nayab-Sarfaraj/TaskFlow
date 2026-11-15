@@ -1,8 +1,17 @@
+from typing import Dict, Optional
+
+import httpx
 from pydantic import ValidationError
 
 
 class RetryableJobError(Exception):
     pass
+
+
+class RetryableEmailError(RetryableJobError):
+    def __init__(self, message: str, result: Optional[Dict[str, int]] = None):
+        super().__init__(message)
+        self.result = result or {}
 
 
 class PermanentJobError(Exception):
@@ -15,6 +24,8 @@ def is_retryable(exception: Exception) -> bool:
     if isinstance(exception, PermanentJobError):
         return False
     if isinstance(exception, TimeoutError):
+        return True
+    if isinstance(exception, (httpx.TimeoutException, httpx.NetworkError)):
         return True
     if isinstance(exception, ConnectionError):
         return True
