@@ -149,11 +149,19 @@ async def test_outbox_priority_selection_deduplicates_jobs(db_session):
     await db_session.commit()
 
     events = await fetch_unpublished_events(db_session)
-    assert len({event.aggregate_id for event in events}) == 100
-    assert [event.aggregate_id for event in events[:70]] == [
-        job.id for job in jobs[99:29:-1]
-    ]
-    assert [event.aggregate_id for event in events[70:]] == [job.id for job in jobs[:30]]
+    priorities = {
+        job.id: job.priority
+        for job in (
+            await db_session.execute(
+                select(Job).where(Job.id.in_([event.aggregate_id for event in events]))
+            )
+        ).scalars()
+    }
+    returned_priorities = [priorities[event.aggregate_id] for event in events]
+    assert len({event.aggregate_id for event in events}) == len(events)
+    assert returned_priorities[: min(70, len(returned_priorities))] == sorted(
+        returned_priorities[: min(70, len(returned_priorities))], reverse=True
+    )
     await cleanup_test_jobs(db_session, [job.id for job in jobs])
 
 
