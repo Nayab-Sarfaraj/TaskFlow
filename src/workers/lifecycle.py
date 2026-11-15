@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import uuid
 
 from sqlalchemy import func, text, update
@@ -7,12 +8,11 @@ from sqlalchemy import func, text, update
 from src.db.database import SessionLocal
 from src.models.workers import Worker, WorkerStatus
 from src.models.jobs import Job, JobStatus
-from src.core.metrics import worker_heartbeat_age_seconds
 
 logger = logging.getLogger(__name__)
 
 HEARTBEAT_INTERVAL = 10
-JOB_LEASE_DURATION = 60
+JOB_LEASE_DURATION = int(os.getenv("JOB_LEASE_DURATION_SECONDS", "60"))
 FAILURE_THRESHOLD = 3
 JOB_LEASE_RENEW_INTERVAL = 15
 
@@ -50,12 +50,7 @@ async def register_worker(worker_id: str, concurrency_limit: int):
 
 async def heart_beat_look(worker_id: str):
     failure_count = 0
-    last_successful_heartbeat = None
     while True:
-        if last_successful_heartbeat is not None:
-            worker_heartbeat_age_seconds.labels(worker_id=worker_id).set(
-                max(0.0, asyncio.get_running_loop().time() - last_successful_heartbeat)
-            )
         try:
             async with SessionLocal() as db:
                 update_statement = (
@@ -68,8 +63,6 @@ async def heart_beat_look(worker_id: str):
                 )
                 result = await db.execute(update_statement)
                 await db.commit()
-                last_successful_heartbeat = asyncio.get_running_loop().time()
-                worker_heartbeat_age_seconds.labels(worker_id=worker_id).set(0)
                 if result.rowcount != 1:
                     logger.warning(
                         "Worker %s is no longer active or draining",
@@ -103,7 +96,10 @@ async def lease_renewal(job_id, attempt_id):
                         Job.lease_expires_at.is_not(None),
                         Job.lease_expires_at > func.now(),
                     )
-                    .values(lease_expires_at=func.now() + text("INTERVAL '60 seconds'"))
+                    .values(
+                        lease_expires_at=func.now()
+                        + text(f"INTERVAL '{JOB_LEASE_DURATION} seconds'")
+                    )
                 )
                 result = await db.execute(statement)
                 await db.commit()

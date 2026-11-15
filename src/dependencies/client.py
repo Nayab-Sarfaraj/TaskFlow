@@ -1,11 +1,21 @@
 from fastapi import Header, HTTPException, status
 
+
+LOAD_TEST_CLIENT_COUNT = 1000
+
 clients = [
     {"client_id": "client_001", "api_key": "test_key_abc123"},
     {"client_id": "client_002", "api_key": "test_key_def456"},
     {"client_id": "client_003", "api_key": "test_key_ghi789"},
     {"client_id": "client_004", "api_key": "test_key_jkl012"},
     {"client_id": "client_005", "api_key": "test_key_mno345"},
+    *[
+        {
+            "client_id": f"load_client_{number:04d}",
+            "api_key": f"load_test_key_{number:04d}",
+        }
+        for number in range(1, LOAD_TEST_CLIENT_COUNT + 1)
+    ],
 ]
 
 

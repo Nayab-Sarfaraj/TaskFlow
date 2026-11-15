@@ -54,11 +54,14 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+REDIS_STREAM = os.getenv("TASKFLOW_REDIS_STREAM", "job_events")
+REDIS_CONSUMER_GROUP = os.getenv("TASKFLOW_REDIS_CONSUMER_GROUP", "workers")
 
 WORKER_ID = os.getenv("WORKER_ID", 1)
 WORKER_CONCURRENCY = int(os.getenv("WORKER_CONCURRENCY", "3"))
 WORKER_SHUTDOWN_GRACE_PERIOD = float(os.getenv("WORKER_SHUTDOWN_GRACE_PERIOD", "30"))
 MAX_JOB_EXECUTION_SECONDS = float(os.getenv("MAX_JOB_EXECUTION_SECONDS", "300"))
+JOB_LEASE_DURATION_SECONDS = int(os.getenv("JOB_LEASE_DURATION_SECONDS", "60"))
 PENDING_RECOVERY_INTERVAL = 15
 PENDING_IDLE_TIMEOUT_MS = 60_000
 if WORKER_CONCURRENCY < 1:
@@ -126,7 +129,8 @@ async def process_messages(messages, worker_id, redis_client):
                             status=JobStatus.PROCESSING,
                             attempt_count=Job.attempt_count + 1,
                             started_at=datetime.now(timezone.utc),
-                            lease_expires_at=func.now() + text("INTERVAL '60 seconds'"),
+                            lease_expires_at=func.now()
+                            + text(f"INTERVAL '{JOB_LEASE_DURATION_SECONDS} seconds'"),
                         )
                         .returning(Job)
                     )
@@ -141,7 +145,7 @@ async def process_messages(messages, worker_id, redis_client):
                             worker_id,
                             job_id,
                         )
-                        await redis_client.xack(stream_name, "workers", message_id)
+                        await redis_client.xack(stream_name, REDIS_CONSUMER_GROUP, message_id)
                         continue
                     else:
                         job_type = updated_job.job_type
@@ -272,11 +276,16 @@ async def process_messages(messages, worker_id, redis_client):
                     event_type,
                 )
                 jobs_completed_total.labels(job_type=job_type_value(job_type)).inc()
+                if execution_started_at is not None:
+                    job_duration_seconds.labels(
+                        job_type=job_type_value(job_type)
+                    ).observe(time.perf_counter() - execution_started_at)
+                    execution_started_at = None
 
                 # A missing/non-queued job is intentionally acknowledged because
                 # there is no valid work left for this message.
                 try:
-                    await redis_client.xack(stream_name, "workers", message_id)
+                    await redis_client.xack(stream_name, REDIS_CONSUMER_GROUP, message_id)
                 except Exception:
                     # The job is already durably complete. An ACK failure must
                     # not turn it into FAILED; leave the message pending for
@@ -520,7 +529,7 @@ async def process_messages(messages, worker_id, redis_client):
                         ).inc()
 
                     # Acknowledge only after both failure updates commit.
-                    await redis_client.xack(stream_name, "workers", message_id)
+                    await redis_client.xack(stream_name, REDIS_CONSUMER_GROUP, message_id)
                     logger.info(
                         "Worker %s finalized job %s (attempt %s) after delivery handling",
                         worker_id,
@@ -546,9 +555,8 @@ async def process_messages(messages, worker_id, redis_client):
                 if execution_started_at is not None and job_type is not None:
                     job_type_label = job_type_value(job_type)
                     active_jobs.labels(job_type=job_type_label).dec()
-                    job_duration_seconds.labels(job_type=job_type_label).observe(
-                        time.perf_counter() - execution_started_at
-                    )
+                elif job_type is not None:
+                    active_jobs.labels(job_type=job_type_value(job_type)).dec()
                 clear_log_context()
 
 
@@ -559,7 +567,7 @@ async def recover_pending_messages(redis_client, worker_id):
     while True:
         try:
             pending = await redis_client.xpending_range(
-                "job_events", "workers", min="-", max="+", count=100
+                REDIS_STREAM, REDIS_CONSUMER_GROUP, min="-", max="+", count=100
             )
             if pending:
                 logger.info("Found %s pending job_events messages", len(pending))
@@ -571,7 +579,7 @@ async def recover_pending_messages(redis_client, worker_id):
                     continue
 
                 raw_messages = await redis_client.xrange(
-                    "job_events", min=message_id, max=message_id, count=1
+                    REDIS_STREAM, min=message_id, max=message_id, count=1
                 )
                 if not raw_messages:
                     continue
@@ -605,8 +613,8 @@ async def recover_pending_messages(redis_client, worker_id):
                     continue
 
                 claimed = await redis_client.xclaim(
-                    "job_events",
-                    "workers",
+                    REDIS_STREAM,
+                    REDIS_CONSUMER_GROUP,
                     consumer,
                     PENDING_IDLE_TIMEOUT_MS,
                     [candidate_id],
@@ -627,13 +635,13 @@ async def recover_pending_messages(redis_client, worker_id):
                                 message_id,
                                 job_id,
                             )
-                            await redis_client.xack("job_events", "workers", message_id)
+                            await redis_client.xack(REDIS_STREAM, REDIS_CONSUMER_GROUP, message_id)
                         elif job.status in (
                             JobStatus.COMPLETED,
                             JobStatus.FAILED,
                             JobStatus.CANCELLED,
                         ):
-                            await redis_client.xack("job_events", "workers", message_id)
+                            await redis_client.xack(REDIS_STREAM, REDIS_CONSUMER_GROUP, message_id)
                         elif job.status == JobStatus.PROCESSING:
                             if job.lease_expires_at is not None and (
                                 job.lease_expires_at > datetime.now(timezone.utc)
@@ -649,17 +657,17 @@ async def recover_pending_messages(redis_client, worker_id):
                                     job_id,
                                 )
                         elif job.status == JobStatus.RETRYING:
-                            await redis_client.xack("job_events", "workers", message_id)
+                            await redis_client.xack(REDIS_STREAM, REDIS_CONSUMER_GROUP, message_id)
                         elif job.status == JobStatus.QUEUED:
                             if job.scheduled_at is None or (
                                 job.scheduled_at <= datetime.now(timezone.utc)
                             ):
                                 await redis_client.xadd(
-                                    "job_events",
+                                    REDIS_STREAM,
                                     {"event": fields["event"]},
                                 )
                                 await redis_client.xack(
-                                    "job_events", "workers", message_id
+                                    REDIS_STREAM, REDIS_CONSUMER_GROUP, message_id
                                 )
                             else:
                                 logger.info(
@@ -719,9 +727,9 @@ async def worker(
             break
         try:
             messages = await redis_client.xreadgroup(
-                groupname="workers",
+                groupname=REDIS_CONSUMER_GROUP,
                 consumername=consumer,
-                streams={"job_events": ">"},
+                streams={REDIS_STREAM: ">"},
                 count=1,
                 block=5000,
             )
@@ -834,7 +842,11 @@ async def main():
         loop.add_signal_handler(sig, request_shutdown, sig, worker_id)
 
     try:
-        await create_group(stream="job_events", group="workers", redis_client=client)
+        await create_group(
+            stream=REDIS_STREAM,
+            group=REDIS_CONSUMER_GROUP,
+            redis_client=client,
+        )
         await register_worker(worker_id=worker_id, concurrency_limit=WORKER_CONCURRENCY)
 
         # await asyncio.gather(*(worker(i+1) for i in range(WORKER_COUNT)))

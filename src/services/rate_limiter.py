@@ -1,9 +1,11 @@
 import math
+import logging
 import time
 import uuid
 
 from fastapi import HTTPException
 from redis.asyncio import Redis
+from redis.exceptions import RedisError
 
 RATE_LIMIT = 60
 WINDOW_MS = 60_000
@@ -31,21 +33,33 @@ redis.call('PEXPIRE', key, window)
 return {1, 0}
 """
 
+logger = logging.getLogger(__name__)
+
 
 async def check_rate_limit(redis: Redis, client_id: str):
     key = f"rate_limit:jobs:{client_id}"
 
     now_ms = int(time.time() * 1000)
 
-    allowed, retry_ms = await redis.eval(
-        RATE_LIMIT_SCRIPT,
-        1,
-        key,
-        now_ms,
-        WINDOW_MS,
-        RATE_LIMIT,
-        str(uuid.uuid4()),
-    )
+    try:
+        allowed, retry_ms = await redis.eval(
+            RATE_LIMIT_SCRIPT,
+            1,
+            key,
+            now_ms,
+            WINDOW_MS,
+            RATE_LIMIT,
+            str(uuid.uuid4()),
+        )
+    except (RedisError, OSError) as exc:
+        # PostgreSQL plus the transactional outbox can durably accept jobs
+        # without Redis. Rate limiting is therefore intentionally fail-open
+        # during a Redis outage rather than rejecting durable submissions.
+        logger.warning(
+            "Redis rate limiting unavailable; accepting durable job submission",
+            extra={"service_name": "api", "error_category": type(exc).__name__},
+        )
+        return
 
     if not allowed:
         retry_after = max(1, math.ceil(retry_ms / 1000))

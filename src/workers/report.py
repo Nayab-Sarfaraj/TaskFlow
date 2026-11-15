@@ -39,7 +39,13 @@ async def process_report(job: Job, job_attempt: JobAttempt) -> dict[str, str]:
             f"({REPORT_MAX_EXECUTION_SECONDS} seconds)"
         )
 
-    await asyncio.wait_for(asyncio.sleep(0), timeout=REPORT_MAX_EXECUTION_SECONDS)
+    # Simulate the requested report work duration. This makes the handler's
+    # execution-time contract meaningful and allows queue/latency telemetry to
+    # observe work that spans Prometheus scrape intervals.
+    await asyncio.wait_for(
+        asyncio.sleep(payload.execution_time_seconds),
+        timeout=REPORT_MAX_EXECUTION_SECONDS,
+    )
     return {
         "report_reference": (
             f"report://jobs/{job.id}/attempts/{job_attempt.id}/"

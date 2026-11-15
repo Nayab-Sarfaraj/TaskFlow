@@ -8,10 +8,9 @@ from src.services import outbox_event as outbox_event_service
 from src.config.redis import get_redis
 from src.logging_config import configure_root_logger, log_context
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, select, update
 from src.models.jobs import Job, JobStatus
 from src.models.outbox_events import OutboxEvent
-from src.core.metrics import queue_depth
 
 logger = logging.getLogger(__name__)
 
@@ -82,12 +81,6 @@ async def run_scheduler_cycle(limit: int = 100) -> int:
                 logger.exception("Scheduler failed while requeueing a job", extra={"error_category": "SchedulerError"})
                 if "set_context" in locals():
                     set_context.__exit__(None, None, None)
-    async with SessionLocal() as db:
-        depth_result = await db.execute(
-            select(Job.status, func.count()).group_by(Job.status)
-        )
-        for status, count in depth_result.all():
-            queue_depth.labels(status=f"postgres_{status.value}").set(count)
     return dispatched
 
 
