@@ -62,9 +62,7 @@ async def process_video(job: Job, job_attempt: JobAttempt) -> dict[str, Optional
 
     async with FFMPEG_SEMAPHORE:
         await asyncio.sleep(0)
-        output_reference = (
-            f"video://jobs/{job.id}/attempts/{job_attempt.id}/output.mp4"
-        )
+        output_reference = f"video://jobs/{job.id}/attempts/{job_attempt.id}/output.mp4"
         thumbnail_reference = (
             f"video://jobs/{job.id}/attempts/{job_attempt.id}/thumbnail.jpg"
             if payload.generate_thumbnail

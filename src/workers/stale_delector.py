@@ -1,4 +1,3 @@
-
 import asyncio
 import logging
 from datetime import datetime, timezone
@@ -13,22 +12,23 @@ from src.models.job_attempts import JobAttempt, JobAttemptStatus
 
 DETECTION_INTERVAL = 15
 HEART_BEAT_TIMEOUT = 30
-JOB_LEASE_DURATION=60
-RECOVERY_BATCH_SIZE=100
+JOB_LEASE_DURATION = 60
+RECOVERY_BATCH_SIZE = 100
 
 logger = logging.getLogger(__name__)
+
 
 async def detect_stale_worker():
     while True:
         try:
             async with SessionLocal() as db:
                 null_heartbeat_result = await db.execute(
-                    select(Worker.id).where(
-                        Worker.status.in_(
-                            (WorkerStatus.ACTIVE, WorkerStatus.DRAINING)
-                        ),
+                    select(Worker.id)
+                    .where(
+                        Worker.status.in_((WorkerStatus.ACTIVE, WorkerStatus.DRAINING)),
                         Worker.last_heartbeat.is_(None),
-                    ).limit(RECOVERY_BATCH_SIZE)
+                    )
+                    .limit(RECOVERY_BATCH_SIZE)
                 )
                 for worker_id in null_heartbeat_result.scalars():
                     logger.error(
@@ -39,13 +39,10 @@ async def detect_stale_worker():
                 statement = (
                     update(Worker)
                     .where(
-                        Worker.status.in_(
-                            (WorkerStatus.ACTIVE, WorkerStatus.DRAINING)
-                        ),
+                        Worker.status.in_((WorkerStatus.ACTIVE, WorkerStatus.DRAINING)),
                         Worker.last_heartbeat.is_not(None),
                         Worker.last_heartbeat
-                        < func.now()
-                        - text(f"INTERVAL '{HEART_BEAT_TIMEOUT} seconds'"),
+                        < func.now() - text(f"INTERVAL '{HEART_BEAT_TIMEOUT} seconds'"),
                     )
                     .values(status=WorkerStatus.OFFLINE)
                     .returning(Worker.id)
@@ -91,7 +88,9 @@ async def abandoned_job_detecton():
 
                     job_id = job.id
                     if job.current_attempt_id is None:
-                        logger.error("Job %s has no current attempt; skipping recovery", job.id)
+                        logger.error(
+                            "Job %s has no current attempt; skipping recovery", job.id
+                        )
                         await db.rollback()
                         continue
 
@@ -139,7 +138,9 @@ async def abandoned_job_detecton():
                         )
                     )
                     await db.commit()
-                    logger.warning("Recovered abandoned job %s as %s", job.id, next_status.value)
+                    logger.warning(
+                        "Recovered abandoned job %s as %s", job.id, next_status.value
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -148,10 +149,12 @@ async def abandoned_job_detecton():
         try:
             async with SessionLocal() as db:
                 result = await db.execute(
-                    select(Job.id).where(
+                    select(Job.id)
+                    .where(
                         Job.status == JobStatus.PROCESSING,
                         Job.lease_expires_at.is_(None),
-                    ).limit(RECOVERY_BATCH_SIZE)
+                    )
+                    .limit(RECOVERY_BATCH_SIZE)
                 )
                 for job_id in result.scalars():
                     logger.error("Job %s has an inconsistent NULL lease", job_id)
@@ -162,15 +165,18 @@ async def abandoned_job_detecton():
 
         await asyncio.sleep(DETECTION_INTERVAL)
 
+
 async def abandoned_job_detecton_legacy():
     while True:
         try:
             async with SessionLocal() as db:
                 null_lease_result = await db.execute(
-                    select(Job.id).where(
+                    select(Job.id)
+                    .where(
                         Job.status == JobStatus.PROCESSING,
                         Job.lease_expires_at.is_(None),
-                    ).limit(RECOVERY_BATCH_SIZE)
+                    )
+                    .limit(RECOVERY_BATCH_SIZE)
                 )
                 for job_id in null_lease_result.scalars():
                     logger.error("Job %s has an inconsistent NULL lease", job_id)

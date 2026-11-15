@@ -70,6 +70,7 @@ class Job(Base):
     result: Mapped[Optional[Dict[str, object]]] = mapped_column(JSONB, nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     client_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    request_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
     status: Mapped[JobStatus] = mapped_column(
         SAEnum(
             JobStatus,

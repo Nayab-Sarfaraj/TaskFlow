@@ -24,6 +24,8 @@ class OutboxEvent(Base):
     aggregate_id: Mapped[int] = mapped_column(ForeignKey("jobs.id"), nullable=False)
     event_type: Mapped[str] = mapped_column(String(100), nullable=False)
     payload: Mapped[Dict[str, object]] = mapped_column(JSONB, nullable=False)
+    request_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    client_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     published_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True),
         nullable=True,

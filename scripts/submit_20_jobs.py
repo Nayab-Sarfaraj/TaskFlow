@@ -8,8 +8,11 @@ from uuid import uuid4
 
 API_BASE_URL = os.getenv("TASKFLOW_API_URL", "http://127.0.0.1:8000")
 API_KEY = os.getenv("TASKFLOW_API_KEY", "test_key_abc123")
-JOB_TYPES = ("video", "email", "report", "scraping")
-JOB_COUNT = 20
+JOB_TYPE = os.getenv("TASKFLOW_JOB_TYPE", "report")
+JOB_COUNT = int(os.getenv("TASKFLOW_JOB_COUNT", "20"))
+# Keep a batch active across more than one 5-second Prometheus scrape.  This
+# makes counter rates and histogram p95 panels observable in local testing.
+REPORT_EXECUTION_SECONDS = float(os.getenv("TASKFLOW_REPORT_EXECUTION_SECONDS", "2"))
 
 
 def main() -> int:
@@ -19,11 +22,14 @@ def main() -> int:
 
     for index in range(1, JOB_COUNT + 1):
         job = {
-            "job_type": JOB_TYPES[(index - 1) % len(JOB_TYPES)],
+            "job_type": JOB_TYPE,
+            # Valid, fast simulated report payloads. This keeps the batch on
+            # the success path and makes throughput/latency metrics useful.
             "payload": {
-                "batch_id": batch_id,
-                "job_number": index,
-                "description": f"Test job {index} from batch {batch_id}",
+                "report_type": "metrics-load-test",
+                "parameters": {"batch_id": batch_id, "job_number": index},
+                "format": "pdf",
+                "execution_time_seconds": REPORT_EXECUTION_SECONDS,
             },
             "priority": (index % 10) + 1,
             "max_retries": 3,
@@ -34,6 +40,7 @@ def main() -> int:
             headers={
                 "Content-Type": "application/json",
                 "X-API-Key": API_KEY,
+                "X-Request-ID": f"batch-{batch_id}-{index:02d}",
                 "Idempotency-Key": f"{batch_id}-{index:02d}",
             },
             method="POST",

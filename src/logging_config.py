@@ -3,9 +3,10 @@ import json
 import logging
 import os
 import sys
+import re
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from dotenv import load_dotenv
 
@@ -16,8 +17,11 @@ _LOG_CONTEXT: contextvars.ContextVar[Dict[str, Any]] = contextvars.ContextVar(
     default={},
 )
 _CONTEXT_FIELDS = (
+    "request_id",
+    "service_name",
     "worker_id",
     "job_id",
+    "attempt_id",
     "attempt_number",
     "event_type",
     "event_id",
@@ -31,12 +35,13 @@ LOG_DIR = os.getenv("LOG_DIR", "logs")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 LOG_HANDLERS = {
     item.strip().lower()
-    for item in os.getenv("LOG_HANDLERS", "console,file").split(",")
+    for item in os.getenv("LOG_HANDLERS", "console").split(",")
     if item.strip()
 }
-LOG_FORMAT_JSON = os.getenv("LOG_FORMAT_JSON", "false").lower() == "true"
+LOG_FORMAT_JSON = os.getenv("LOG_FORMAT_JSON", "true").lower() == "true"
 MAX_LOG_SIZE = int(os.getenv("MAX_LOG_SIZE", str(10 * 1024 * 1024)))
 BACKUP_COUNT = int(os.getenv("BACKUP_COUNT", "3"))
+LOG_INCLUDE_TRACEBACK = os.getenv("LOG_INCLUDE_TRACEBACK", "false").lower() == "true"
 
 
 class Colors:
@@ -66,10 +71,38 @@ class TaskFlowContextFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         context = _LOG_CONTEXT.get()
         for field in _CONTEXT_FIELDS:
-            if not hasattr(record, field):
+            if context.get(field) is not None:
+                setattr(record, field, context[field])
+            elif not hasattr(record, field):
                 setattr(record, field, context.get(field))
         record.component = _component_name(record.name)
         return True
+
+
+_SENSITIVE_KEYS = {"api_key", "authorization", "cookie", "password", "secret", "token", "payload", "data", "credentials"}
+_SENSITIVE_TEXT_PATTERNS = (
+    (re.compile(r"(?i)(bearer\s+)[^\s,;]+"), r"\1[REDACTED]"),
+    (re.compile(r"(?i)(password|passwd|secret|token|api[_-]?key)(\s*[:=]\s*)[^\s,;&]+"), r"\1\2[REDACTED]"),
+    (re.compile(r"(?i)(://[^:/?#]+:)[^@\s]+(@)"), r"\1[REDACTED]\2"),
+)
+
+
+def _redact(value: Any, key: Optional[str] = None) -> Any:
+    if key and any(part in key.lower() for part in _SENSITIVE_KEYS):
+        return "[REDACTED]"
+    if isinstance(value, dict):
+        return {k: _redact(v, str(k)) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_redact(item) for item in value]
+    if isinstance(value, str):
+        for pattern, replacement in _SENSITIVE_TEXT_PATTERNS:
+            value = pattern.sub(replacement, value)
+    return value
+
+
+def _safe_exception_text(record: logging.LogRecord) -> str:
+    exception_text = TaskFlowJSONFormatter().formatException(record.exc_info)
+    return _redact(exception_text)
 
 
 class TaskFlowFormatter(logging.Formatter):
@@ -77,17 +110,17 @@ class TaskFlowFormatter(logging.Formatter):
         timestamp = datetime.fromtimestamp(record.created, timezone.utc).astimezone()
         timestamp_text = timestamp.strftime("%Y-%m-%d %H:%M:%S")
         context = " ".join(
-            f"{field}={getattr(record, field)}"
+            f"{field}={_redact(getattr(record, field), field)}"
             for field in _CONTEXT_FIELDS
             if getattr(record, field, None) is not None
         )
         details = f" {context}" if context else ""
         line = (
             f"{timestamp_text} {record.levelname:<8} "
-            f"[{record.component}] {record.getMessage()}{details}"
+            f"[{record.component}] {_redact(record.getMessage())}{details}"
         )
-        if record.exc_info:
-            line += "\n" + self.formatException(record.exc_info)
+        if record.exc_info and LOG_INCLUDE_TRACEBACK:
+            line += "\n" + _safe_exception_text(record)
         return line
 
 
@@ -105,7 +138,7 @@ class ColoredTaskFlowFormatter(TaskFlowFormatter):
         timestamp_text = timestamp.strftime("%Y-%m-%d %H:%M:%S")
         level_color = self._LEVEL_COLORS.get(record.levelno, Colors.RESET)
         context = " ".join(
-            f"{field}={getattr(record, field)}"
+            f"{field}={_redact(getattr(record, field), field)}"
             for field in _CONTEXT_FIELDS
             if getattr(record, field, None) is not None
         )
@@ -114,10 +147,10 @@ class ColoredTaskFlowFormatter(TaskFlowFormatter):
             f"{Colors.DIM}{timestamp_text}{Colors.RESET} "
             f"{level_color}{record.levelname:<8}{Colors.RESET} "
             f"{Colors.BLUE}[{record.component}]{Colors.RESET} "
-            f"{record.getMessage()}{details}"
+            f"{_redact(record.getMessage())}{details}"
         )
-        if record.exc_info:
-            line += "\n" + self.formatException(record.exc_info)
+        if record.exc_info and LOG_INCLUDE_TRACEBACK:
+            line += "\n" + _safe_exception_text(record)
         return line
 
 
@@ -125,17 +158,19 @@ class TaskFlowJSONFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         timestamp = datetime.fromtimestamp(record.created, timezone.utc)
         payload: Dict[str, Any] = {
-            "timestamp": timestamp.isoformat(timespec="milliseconds"),
+            "timestamp": timestamp.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
             "level": record.levelname,
+            "service": getattr(record, "service_name", None) or _component_name(record.name),
+            "event": _redact(getattr(record, "event", None) or record.getMessage()),
             "component": _component_name(record.name),
             "logger": record.name,
-            "message": record.getMessage(),
+            "message": _redact(record.getMessage()),
         }
 
         for field in _CONTEXT_FIELDS:
             value = getattr(record, field, None)
             if value is not None:
-                payload[field] = value
+                payload[field] = _redact(value, field)
 
         extra_fields = {
             key: value
@@ -145,10 +180,19 @@ class TaskFlowJSONFormatter(logging.Formatter):
             and key != "component"
             and not key.startswith("_")
         }
-        payload.update(extra_fields)
+        reserved_keys = set(payload)
+        payload.update(
+            {
+                key: _redact(value, key)
+                for key, value in extra_fields.items()
+                if key not in reserved_keys
+            }
+        )
 
         if record.exc_info:
-            payload["exception"] = self.formatException(record.exc_info)
+            payload["error_category"] = type(record.exc_info[1]).__name__
+            if LOG_INCLUDE_TRACEBACK:
+                payload["exception"] = _safe_exception_text(record)
 
         return json.dumps(payload, default=str)
 
@@ -159,6 +203,22 @@ def set_log_context(**fields: Any) -> None:
         {field: value for field, value in fields.items() if field in _CONTEXT_FIELDS}
     )
     _LOG_CONTEXT.set(context)
+
+
+def log_context(**fields: Any):
+    """Temporarily add correlation fields to logs in the current async context."""
+    valid_fields = {
+        key: value for key, value in fields.items() if key in _CONTEXT_FIELDS
+    }
+
+    class _Context:
+        def __enter__(self):
+            self._token = _LOG_CONTEXT.set({**_LOG_CONTEXT.get(), **valid_fields})
+            return self
+
+        def __exit__(self, *_):
+            _LOG_CONTEXT.reset(self._token)
+    return _Context()
 
 
 def clear_log_context() -> None:

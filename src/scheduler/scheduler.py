@@ -6,9 +6,9 @@ from datetime import datetime, timezone
 from src.db.database import SessionLocal
 from src.services import outbox_event as outbox_event_service
 from src.config.redis import get_redis
-from src.logging_config import configure_root_logger
+from src.logging_config import configure_root_logger, log_context
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, select, update
 from src.models.jobs import Job, JobStatus
 from src.models.outbox_events import OutboxEvent
 
@@ -37,6 +37,8 @@ async def run_scheduler_cycle(limit: int = 100) -> int:
                     break
 
                 job_id = job.id
+                set_context = log_context(service_name="scheduler", job_id=str(job_id))
+                set_context.__enter__()
                 scheduled_at = job.scheduled_at
                 payload = job.payload
 
@@ -61,6 +63,8 @@ async def run_scheduler_cycle(limit: int = 100) -> int:
                     aggregate_id=job_id,
                     event_type="job.created",
                     payload=payload,
+                    request_id=job.request_id,
+                    client_id=job.client_id,
                 )
                 db.add(new_event)
                 await db.commit()
@@ -71,9 +75,12 @@ async def run_scheduler_cycle(limit: int = 100) -> int:
                     scheduled_at,
                     new_event.id,
                 )
+                set_context.__exit__(None, None, None)
             except Exception:
                 await db.rollback()
-                logger.exception("Scheduler failed while requeueing a job")
+                logger.exception("Scheduler failed while requeueing a job", extra={"error_category": "SchedulerError"})
+                if "set_context" in locals():
+                    set_context.__exit__(None, None, None)
     return dispatched
 
 

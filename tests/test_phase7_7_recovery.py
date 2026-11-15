@@ -77,15 +77,18 @@ async def test_expired_final_attempt_becomes_failed(db_session, monkeypatch):
     await db_session.refresh(job)
     assert job.status == JobStatus.FAILED
     assert job.attempt_count == 3
-    assert len(
-        (
-            await db_session.execute(
-                select(JobAttempt).where(JobAttempt.job_id == job.id)
+    assert (
+        len(
+            (
+                await db_session.execute(
+                    select(JobAttempt).where(JobAttempt.job_id == job.id)
+                )
             )
+            .scalars()
+            .all()
         )
-        .scalars()
-        .all()
-    ) == 1
+        == 1
+    )
     await cleanup_jobs(db_session, [job.id])
 
 

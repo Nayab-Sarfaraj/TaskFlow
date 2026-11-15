@@ -1,0 +1,22 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "panels": [
+    {"id": 1, "title": "Jobs completed/sec", "type": "timeseries", "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "sum(rate(taskflow_jobs_completed_total[5m]))", "refId": "A"}]},
+    {"id": 2, "title": "Jobs submitted/sec", "type": "timeseries", "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "sum(rate(taskflow_jobs_submitted_total[5m]))", "refId": "A"}]},
+    {"id": 3, "title": "Jobs failed/sec", "type": "timeseries", "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "sum(rate(taskflow_jobs_failed_total[5m]))", "refId": "A"}]},
+    {"id": 4, "title": "Retry rate", "type": "timeseries", "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "sum(rate(taskflow_jobs_retried_total[5m]))", "refId": "A"}]},
+    {"id": 5, "title": "Active jobs", "type": "stat", "gridPos": {"h": 8, "w": 6, "x": 0, "y": 16}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "sum(taskflow_active_jobs)", "refId": "A"}], "options": {"reduceOptions": {"calcs": ["lastNotNull"], "values": false}}},
+    {"id": 6, "title": "Queue backlog", "type": "timeseries", "gridPos": {"h": 8, "w": 18, "x": 6, "y": 16}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "sum by (status) (taskflow_queue_depth)", "legendFormat": "{{status}}", "refId": "A"}]},
+    {"id": 7, "title": "Execution p95", "type": "timeseries", "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "histogram_quantile(0.95, sum by (le) (rate(taskflow_job_duration_seconds_bucket[5m])))", "refId": "A"}]},
+    {"id": 8, "title": "Queue wait p95", "type": "timeseries", "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "histogram_quantile(0.95, sum by (le) (rate(taskflow_job_queue_wait_seconds_bucket[5m])))", "refId": "A"}]}
+  ],
+  "schemaVersion": 39,
+  "tags": ["taskflow", "system-overview"],
+  "templating": {"list": []},
+  "time": {"from": "now-1h", "to": "now"},
+  "timezone": "browser",
+  "title": "TaskFlow — System Overview",
+  "uid": "taskflow-system-overview",
+  "version": 1
+}
