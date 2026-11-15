@@ -2,10 +2,12 @@ import asyncio
 import json
 import logging
 import os
+import signal
+import sys
 from src.workers.groups import create_group
 from src.config.redis import close_redis
-from src.db.database import SessionLocal
-from sqlalchemy import or_, update
+from src.db.database import SessionLocal, engine
+from sqlalchemy import or_, select, update,func,text
 from src.models.jobs import Job, JobStatus, JobType
 from src.models.job_attempts import JobAttempt, JobAttemptStatus
 from sqlalchemy.dialects.postgresql import insert
@@ -21,20 +23,41 @@ from src.utils.retry_backoff import (
     get_delay,
     should_retry,
 )
+from src.workers.lifecycle import (
+    get_worker_id,
+    register_worker,
+    heart_beat_look,
+    HeartBeatError,
+    WorkerRegisterationError,
+    lease_renewal,
+)
+from src.workers.stale_delector import abandoned_job_detecton, detect_stale_worker
+import signal
+from src.models.workers import Worker, WorkerStatus
 
 logger = logging.getLogger(__name__)
 
 load_dotenv()
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
-WORKER_ID = os.getenv("WORKER_ID")
+WORKER_ID = os.getenv("WORKER_ID",1)
 WORKER_CONCURRENCY = int(os.getenv("WORKER_CONCURRENCY", "3"))
+WORKER_SHUTDOWN_GRACE_PERIOD = float(
+    os.getenv("WORKER_SHUTDOWN_GRACE_PERIOD", "30")
+)
+PENDING_RECOVERY_INTERVAL = 15
+PENDING_IDLE_TIMEOUT_MS = 60_000
 if WORKER_CONCURRENCY < 1:
     raise ValueError("WORKER_CONCURRENCY must be greater than zero")
+
+shutdown_signal=asyncio.Event()
 
 
 class ExecutionOwnershipLost(Exception):
     pass
+
+async def handle_job(job_id,attempt_id):
+    await asyncio.sleep(120)
 
 
 async def process_messages(messages, worker_id, redis_client):
@@ -47,6 +70,8 @@ async def process_messages(messages, worker_id, redis_client):
             processing_started = False
             operation_key = None
             job_type = None
+            lease_renewal_task = None
+            job_task = None
             try:
                 event = json.loads(fields["event"])
                 job_id = int(event["job_id"])
@@ -67,9 +92,11 @@ async def process_messages(messages, worker_id, redis_client):
                             status=JobStatus.PROCESSING,
                             attempt_count=Job.attempt_count + 1,
                             started_at=datetime.now(timezone.utc),
+                            lease_expires_at=func.now()+text("INTERVAL '60 seconds'")
                         )
                         .returning(Job)
                     )
+
                     result = await db.execute(statement)
                     updated_job = result.scalar_one_or_none()
 
@@ -103,6 +130,7 @@ async def process_messages(messages, worker_id, redis_client):
                             .values(current_attempt_id=attempt_id)
                         )
                         await db.commit()
+
                         processing_started = True
 
                 logger.info(
@@ -112,9 +140,32 @@ async def process_messages(messages, worker_id, redis_client):
                     attempt_number,
                     event_type,
                 )
-
+                lease_renewal_task=asyncio.create_task(lease_renewal(job_id=job_id,attempt_id=attempt_id))
                 # TODO: replace this with the actual job handler.
-                await asyncio.sleep(2)
+                job_task=asyncio.create_task(handle_job(job_id=job_id,attempt_id=attempt_id))
+
+                done, pending = await asyncio.wait(
+                    {job_task, lease_renewal_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if lease_renewal_task in done:
+                    # Renewal ended: ownership was lost or retry policy failed.
+                    try:
+                        lease_renewal_task.result()
+                    except Exception as exc:
+                        raise ExecutionOwnershipLost from exc
+                    job_task.cancel()
+                    await asyncio.gather(job_task, return_exceptions=True)
+                    raise ExecutionOwnershipLost
+
+                if job_task in done:
+                    # Job completed first.
+                    await job_task
+                    lease_renewal_task.cancel()
+                    await asyncio.gather(
+                        lease_renewal_task,
+                        return_exceptions=True,
+                    )
 
                 async with SessionLocal() as db:
                     attempt_statement = (
@@ -138,10 +189,12 @@ async def process_messages(messages, worker_id, redis_client):
                             Job.id == job_id,
                             Job.status == JobStatus.PROCESSING,
                             Job.current_attempt_id == attempt_id,
+                            Job.lease_expires_at>func.now()
                         )
                         .values(
                             status=JobStatus.COMPLETED,
                             completed_at=datetime.now(timezone.utc),
+                            lease_expires_at=None
                         )
                     )
                     job_result = await db.execute(job_statement)
@@ -193,6 +246,12 @@ async def process_messages(messages, worker_id, redis_client):
                     worker_id,
                     job_id,
                 )
+                if lease_renewal_task is not None:
+                        lease_renewal_task.cancel()
+                        await asyncio.gather(
+                                            lease_renewal_task,
+                                            return_exceptions=True,
+                                        )
                 # Do not mark the job as FAILED.
                 # Leave this message pending for later reconciliation.
                 continue
@@ -260,11 +319,13 @@ async def process_messages(messages, worker_id, redis_client):
                                         Job.id == job_id,
                                         Job.status == JobStatus.PROCESSING,
                                         Job.current_attempt_id == attempt_id,
+                                        Job.lease_expires_at>func.now()
                                     )
                                     .values(
                                         status=JobStatus.RETRYING,
                                         error_message=error_message,
                                         scheduled_at=next_execution_time,
+                                        lease_expires_at=None
                                     )
                                 )
                                 job_result = await db.execute(job_statement)
@@ -290,11 +351,13 @@ async def process_messages(messages, worker_id, redis_client):
                                         == historical_attempt_number,
                                         JobAttempt.status
                                         == JobAttemptStatus.PROCESSING,
+                                        
                                     )
                                     .values(
                                         status=JobAttemptStatus.FAILED,
                                         error_message=error_message,
                                         finished_at=datetime.now(timezone.utc),
+                                        
                                     )
                                 )
                                 attempt_result = await db.execute(attempt_statement)
@@ -305,11 +368,13 @@ async def process_messages(messages, worker_id, redis_client):
                                         Job.id == job_id,
                                         Job.status == JobStatus.PROCESSING,
                                         Job.current_attempt_id == attempt_id,
+                                        Job.lease_expires_at > func.now(),  
                                     )
                                     .values(
                                         status=JobStatus.FAILED,
                                         error_message=error_message,
                                         scheduled_at=None,
+                                        lease_expires_at=None
                                     )
                                 )
                                 job_result = await db.execute(job_statement)
@@ -349,11 +414,14 @@ async def process_messages(messages, worker_id, redis_client):
                                     Job.id == job_id,
                                     Job.status == JobStatus.PROCESSING,
                                     Job.current_attempt_id == attempt_id,
+                                    Job.lease_expires_at > func.now(),
+
                                 )
                                 .values(
                                     status=JobStatus.FAILED,
                                     error_message=error_message,
                                     scheduled_at=None,
+                                    lease_expires_at=None
                                 )
                             )
                             job_result = await db.execute(job_statement)
@@ -380,6 +448,152 @@ async def process_messages(messages, worker_id, redis_client):
                         worker_id,
                         job_id,
                     )
+            finally:
+                for task in (job_task, lease_renewal_task):
+                    if task is not None and not task.done():
+                        task.cancel()
+                tasks = tuple(
+                    task
+                    for task in (job_task, lease_renewal_task)
+                    if task is not None
+                )
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def recover_pending_messages(redis_client, worker_id):
+    """Inspect and reclaim abandoned messages from the workers group."""
+    consumer = f"recovery_{worker_id}"
+    while True:
+        try:
+            pending = await redis_client.xpending_range(
+                "job_events", "workers", min="-", max="+", count=100
+            )
+            if pending:
+                logger.info("Found %s pending job_events messages", len(pending))
+
+            for pending_entry in pending:
+                message_id = pending_entry["message_id"]
+                idle_ms = pending_entry["time_since_delivered"]
+                if idle_ms < PENDING_IDLE_TIMEOUT_MS:
+                    continue
+
+                raw_messages = await redis_client.xrange(
+                    "job_events", min=message_id, max=message_id, count=1
+                )
+                if not raw_messages:
+                    continue
+                candidate_id, candidate_fields = raw_messages[0]
+                try:
+                    event = json.loads(candidate_fields["event"])
+                    candidate_job_id = int(event["job_id"])
+                except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                    logger.exception(
+                        "Malformed pending event in Redis message %s; skipping",
+                        candidate_id,
+                    )
+                    continue
+                async with SessionLocal() as db:
+                    result = await db.execute(
+                        select(Job).where(Job.id == candidate_job_id)
+                    )
+                    candidate_job = result.scalar_one_or_none()
+
+                if (
+                    candidate_job is not None
+                    and candidate_job.status == JobStatus.PROCESSING
+                    and candidate_job.lease_expires_at is not None
+                    and candidate_job.lease_expires_at > datetime.now(timezone.utc)
+                ):
+                    logger.info(
+                        "Skipping active message %s for job %s",
+                        candidate_id,
+                        candidate_job_id,
+                    )
+                    continue
+
+                claimed = await redis_client.xclaim(
+                    "job_events",
+                    "workers",
+                    consumer,
+                    PENDING_IDLE_TIMEOUT_MS,
+                    [candidate_id],
+                )
+                if not claimed:
+                    continue
+                message_id, fields = claimed[0]
+                try:
+                    job_id = candidate_job_id
+                    async with SessionLocal() as db:
+                        result = await db.execute(
+                            select(Job).where(Job.id == job_id)
+                        )
+                        job = result.scalar_one_or_none()
+
+                    if True:
+                        if job is None:
+                            logger.error(
+                                "Reclaimed message %s references missing job %s",
+                                message_id,
+                                job_id,
+                            )
+                            await redis_client.xack(
+                                "job_events", "workers", message_id
+                            )
+                        elif job.status in (
+                            JobStatus.COMPLETED,
+                            JobStatus.FAILED,
+                            JobStatus.CANCELLED,
+                        ):
+                            await redis_client.xack(
+                                "job_events", "workers", message_id
+                            )
+                        elif job.status == JobStatus.PROCESSING:
+                            if job.lease_expires_at is not None and (
+                                job.lease_expires_at > datetime.now(timezone.utc)
+                            ):
+                                logger.info(
+                                    "Leaving message %s pending; job %s lease is valid",
+                                    message_id,
+                                    job_id,
+                                )
+                            else:
+                                logger.info(
+                                    "Leaving expired job %s for abandoned-job recovery",
+                                    job_id,
+                                )
+                        elif job.status == JobStatus.RETRYING:
+                            await redis_client.xack(
+                                "job_events", "workers", message_id
+                            )
+                        elif job.status == JobStatus.QUEUED:
+                            if job.scheduled_at is None or (
+                                job.scheduled_at <= datetime.now(timezone.utc)
+                            ):
+                                await redis_client.xadd(
+                                    "job_events",
+                                    {"event": fields["event"]},
+                                )
+                                await redis_client.xack(
+                                    "job_events", "workers", message_id
+                                )
+                            else:
+                                logger.info(
+                                    "Leaving message %s pending; job %s is not yet eligible",
+                                    message_id,
+                                    job_id,
+                                )
+                except Exception:
+                    logger.exception(
+                        "Failed PostgreSQL reconciliation for message %s",
+                        message_id,
+                    )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Pending Redis message recovery failed")
+
+        await asyncio.sleep(PENDING_RECOVERY_INTERVAL)
 
 
 async def execute_job(messages, semaphore, worker_id, redis_client):
@@ -389,13 +603,20 @@ async def execute_job(messages, semaphore, worker_id, redis_client):
         semaphore.release()
 
 
-async def worker(worker_id: int, redis_client):
+async def worker(
+    worker_id: int,
+    redis_client,
+    shutdown_event: asyncio.Event,
+):
     consumer = f"worker_{worker_id}"
     semaphore = asyncio.Semaphore(WORKER_CONCURRENCY)
     active_tasks = set()
 
     while True:
         await semaphore.acquire()
+        if shutdown_event.is_set():
+            semaphore.release()
+            break
         try:
             messages = await redis_client.xreadgroup(
                 groupname="workers",
@@ -407,6 +628,10 @@ async def worker(worker_id: int, redis_client):
             if not messages:
                 semaphore.release()
                 continue
+            if shutdown_event.is_set():
+                # Leave already-delivered messages pending for recovery.
+                semaphore.release()
+                break
             if messages:
                 task = asyncio.create_task(
                     execute_job(messages, semaphore, worker_id, redis_client)
@@ -423,16 +648,194 @@ async def worker(worker_id: int, redis_client):
             logger.exception("Worker %s failed", consumer)
             await asyncio.sleep(1)
 
+    if active_tasks:
+        logger.info(
+            "Worker %s draining %s active task(s) for up to %s seconds",
+            worker_id,
+            len(active_tasks),
+            WORKER_SHUTDOWN_GRACE_PERIOD,
+        )
+        done, pending = await asyncio.wait(
+            tuple(active_tasks),
+            timeout=WORKER_SHUTDOWN_GRACE_PERIOD,
+        )
+        if pending:
+            logger.warning(
+                "Worker %s grace period expired with %s task(s) still active",
+                worker_id,
+                len(pending),
+            )
+            for task in pending:
+                task.cancel()
+            _, still_running = await asyncio.wait(pending, timeout=5)
+            if still_running:
+                logger.error(
+                    "Worker %s has %s task(s) that ignored cancellation",
+                    worker_id,
+                    len(still_running),
+                )
+        if done:
+            await asyncio.gather(*done, return_exceptions=True)
+
+
+
+async def begin_shutdown(signum,worker_id):
+    logger.info("Received %s; requesting graceful shutdown", signum)
+
+    async with SessionLocal() as db:
+        try:
+            await db.execute(
+                update(Worker)
+                .where(
+                    Worker.id == worker_id,
+                    Worker.status == WorkerStatus.ACTIVE,
+                )
+                .values(status=WorkerStatus.DRAINING)
+            )
+            await db.commit()
+        except Exception:
+            logger.exception(
+                "Failed to mark worker %s as DRAINING during shutdown",
+                worker_id,
+            )
+
 
 async def main():
-
+    worker_id=get_worker_id()
     client = Redis.from_url(REDIS_URL, decode_responses=True)
+    heartbeat_task=None
+    failure_count=0
+    abandoned_job_detecton_task=None
+    detect_stale_worker_task=None
+    pending_recovery_task=None
+    worker_task = None
+    shutdown_status_task = None
+    shutdown_wait_task = None
+    loop = asyncio.get_running_loop()
+    shutdown_event = asyncio.Event()
+    shutdown_started = False
+
+    def request_shutdown(signum, worker_id):
+        nonlocal shutdown_started
+        if shutdown_started:
+            logger.warning("Shutdown already in progress; ignoring signal %s", signum)
+            return
+        shutdown_started = True
+        logger.info("Received %s; requesting graceful shutdown", signal.Signals(signum).name)
+        shutdown_event.set()
+        # FIX: track the status update so cleanup cannot race ahead of it.
+        nonlocal shutdown_status_task
+        shutdown_status_task = asyncio.create_task(
+            begin_shutdown(signum=signum, worker_id=worker_id)
+        )
+        
+            
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, request_shutdown, sig,worker_id)
+
     try:
         await create_group(stream="job_events", group="workers", redis_client=client)
+        await register_worker(worker_id=worker_id,concurrency_limit=WORKER_CONCURRENCY)
+
         # await asyncio.gather(*(worker(i+1) for i in range(WORKER_COUNT)))
-        await worker(WORKER_ID, redis_client=client)
+
+        heartbeat_task=asyncio.create_task(heart_beat_look(worker_id=worker_id))
+        detect_stale_worker_task=asyncio.create_task(detect_stale_worker())
+        abandoned_job_detecton_task=asyncio.create_task(abandoned_job_detecton())
+        pending_recovery_task=asyncio.create_task(
+            recover_pending_messages(client, worker_id)
+        )
+
+        worker_task = asyncio.create_task(
+            worker(
+                worker_id,
+                redis_client=client,
+                shutdown_event=shutdown_event,
+            )
+        )
+        # FIX: monitor both independent shutdown and worker failure.
+        shutdown_wait_task = asyncio.create_task(shutdown_event.wait())
+        done, _ = await asyncio.wait(
+            {worker_task, heartbeat_task, shutdown_wait_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if heartbeat_task in done:
+            # FIX: a failed heartbeat must stop new job consumption.
+            try:
+                heartbeat_task.result()
+            except Exception:
+                logger.exception("Worker heartbeat task failed; requesting shutdown")
+            else:
+                logger.error(
+                    "Worker heartbeat task stopped unexpectedly; requesting shutdown"
+                )
+            request_shutdown(signal.SIGTERM, worker_id)
+            await worker_task
+        elif worker_task in done:
+            worker_task.result()
+        else:
+            await worker_task
+        if shutdown_status_task is not None:
+            await shutdown_status_task
+    except Exception as e:
+        if isinstance(e,WorkerRegisterationError):
+           sys.exit(1)
+        if isinstance(e,HeartBeatError):
+            sys.exit(1)
     finally:
+        if shutdown_wait_task is not None and not shutdown_wait_task.done():
+            shutdown_wait_task.cancel()
+            await asyncio.gather(shutdown_wait_task, return_exceptions=True)
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.remove_signal_handler(sig)
+        if worker_task is not None and not worker_task.done():
+            worker_task.cancel()
+            await asyncio.gather(worker_task, return_exceptions=True)
+        if heartbeat_task is not None:
+            heartbeat_task.cancel()
+            await asyncio.gather(
+                heartbeat_task,
+                return_exceptions=True,
+            )
+        if detect_stale_worker_task is not None:
+            detect_stale_worker_task.cancel()
+            await asyncio.gather(
+                            detect_stale_worker_task,
+                            return_exceptions=True,
+                        )
+        if abandoned_job_detecton_task is not None:
+            abandoned_job_detecton_task.cancel()
+            await asyncio.gather(
+                        abandoned_job_detecton_task,
+                        return_exceptions=True,
+                    )
+        if pending_recovery_task is not None:
+            pending_recovery_task.cancel()
+            await asyncio.gather(
+                pending_recovery_task,
+                return_exceptions=True,
+            )
+        try:
+            async with SessionLocal() as db:
+                await db.execute(
+                    update(Worker)
+                    .where(
+                        Worker.id == worker_id,
+                        Worker.status.in_(
+                            (WorkerStatus.ACTIVE, WorkerStatus.DRAINING)
+                        ),
+                    )
+                    .values(status=WorkerStatus.OFFLINE)
+                )
+                await db.commit()
+        except Exception:
+            logger.exception(
+                "Failed to mark worker %s as OFFLINE during shutdown",
+                worker_id,
+            )
         await close_redis()
+        await engine.dispose()
 
 
 if __name__ == "__main__":
