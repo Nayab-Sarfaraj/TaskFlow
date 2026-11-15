@@ -40,9 +40,13 @@ class EmailJobPayload(BaseModel):
         cleaned_recipients = [recipient.strip() for recipient in recipients]
         if any(not recipient for recipient in cleaned_recipients):
             raise ValueError("recipients must not contain empty addresses")
-        if any(not EMAIL_PATTERN.fullmatch(recipient) for recipient in cleaned_recipients):
+        if any(
+            not EMAIL_PATTERN.fullmatch(recipient) for recipient in cleaned_recipients
+        ):
             raise ValueError("recipients must contain valid email addresses")
-        normalized_recipients = [recipient.casefold() for recipient in cleaned_recipients]
+        normalized_recipients = [
+            recipient.casefold() for recipient in cleaned_recipients
+        ]
         if len(normalized_recipients) != len(set(normalized_recipients)):
             raise ValueError("recipients must not contain duplicates")
         return cleaned_recipients

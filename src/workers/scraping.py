@@ -21,9 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 SCRAPING_MAX_URLS = int(os.getenv("MAX_SCRAPING_URLS", "20"))
-SCRAPING_MAX_RESPONSE_BYTES = int(
-    os.getenv("MAX_HTTP_RESPONSE_MB", "10")
-) * 1024 * 1024
+SCRAPING_MAX_RESPONSE_BYTES = int(os.getenv("MAX_HTTP_RESPONSE_MB", "10")) * 1024 * 1024
 SCRAPING_REQUEST_TIMEOUT_SECONDS = float(
     os.getenv("SCRAPING_REQUEST_TIMEOUT_SECONDS", "15")
 )
@@ -43,7 +41,9 @@ class PinnedNetworkBackend(httpcore.AsyncNetworkBackend):
     def pin(self, hostname: str, address: str) -> None:
         self._pinned[hostname] = address
 
-    async def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+    async def connect_tcp(
+        self, host, port, timeout=None, local_address=None, socket_options=None
+    ):
         return await self._backend.connect_tcp(
             self._pinned.get(host, host),
             port,
@@ -94,7 +94,9 @@ async def _fetch_page(
         current_url, validated_ip = await resolve_safe_url(current_url)
         hostname = httpx.URL(current_url).host
         transport.backend.pin(hostname, validated_ip)
-        async with client.stream("GET", current_url, follow_redirects=False) as response:
+        async with client.stream(
+            "GET", current_url, follow_redirects=False
+        ) as response:
             if response.is_redirect:
                 location = response.headers.get("location")
                 if not location:
@@ -148,7 +150,9 @@ async def process_scraping(job: Job, job_attempt: JobAttempt) -> Dict[str, Any]:
                 logger.warning("Scraping URL failed: %s", type(exc).__name__)
                 pages.append(
                     {
-                        "url_hash": hashlib.sha256(str(url).encode("utf-8")).hexdigest(),
+                        "url_hash": hashlib.sha256(
+                            str(url).encode("utf-8")
+                        ).hexdigest(),
                         "status": "failed",
                         "error": type(exc).__name__,
                     }

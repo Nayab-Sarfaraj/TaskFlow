@@ -4,6 +4,7 @@ from src.repositories import jobs as job_repository
 from typing import Optional
 from src.exceptions import JobRetryNotFoundError
 from src.models.jobs import JobStatus, JobType
+from src.core.metrics import jobs_submitted_total, job_type_value
 
 
 async def create_job(
@@ -11,9 +12,13 @@ async def create_job(
     job: job_submission_request,
     client_id: str,
     idempotency_key: Optional[str] = None,
+    request_id: Optional[str] = None,
 ):
 
-    return await job_repository.create_job(db, job, client_id, idempotency_key)
+    result = await job_repository.create_job(db, job, client_id, idempotency_key, request_id)
+    if getattr(result, "_taskflow_created_new", False):
+        jobs_submitted_total.labels(job_type=job_type_value(job.job_type)).inc()
+    return result
 
 
 async def get_client_jobs(

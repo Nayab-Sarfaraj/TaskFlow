@@ -2,7 +2,7 @@ import os
 from typing import AsyncIterator
 
 from dotenv import load_dotenv
-from fastapi import APIRouter, status, Header, HTTPException, Depends
+from fastapi import APIRouter, status, Header, HTTPException, Depends, Request
 from redis.asyncio import Redis
 from src.schemas.jobs import (
     job_submission_request,
@@ -25,6 +25,7 @@ from src.exceptions import (
 from src.models.jobs import JobStatus, JobType
 from typing import Optional
 from fastapi import Query
+from src.logging_config import set_log_context
 
 router = APIRouter()
 load_dotenv()
@@ -47,6 +48,7 @@ async def get_rate_limit_redis() -> AsyncIterator[Redis]:
     status_code=status.HTTP_201_CREATED,
 )
 async def submit_job(
+    request: Request,
     job_request: job_submission_request,
     idempotency_key: Optional[str] = Header(default=None),
     client: dict = Depends(authenticate_client),
@@ -56,8 +58,10 @@ async def submit_job(
     try:
 
         client_id = client["client_id"]
+        set_log_context(service_name="api", client_id=client_id)
         await check_rate_limit(redis_client, client_id)
-        return await job_service.create_job(db, job_request, client_id, idempotency_key)
+        request_id = getattr(request.state, "request_id", None)
+        return await job_service.create_job(db, job_request, client_id, idempotency_key, request_id)
     except IdempotencyConflictError:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -88,6 +92,7 @@ async def get_client_jobs(
     db: AsyncSession = Depends(get_db),
 ):
 
+    set_log_context(service_name="api", client_id=client["client_id"])
     return await job_service.get_client_jobs(
         db,
         client_id=client["client_id"],
@@ -108,6 +113,7 @@ async def get_job(
     client: dict = Depends(authenticate_client),
     db: AsyncSession = Depends(get_db),
 ):
+    set_log_context(service_name="api", client_id=client["client_id"], job_id=str(job_id))
     job = await job_service.get_job(
         db,
         job_id=job_id,
@@ -132,6 +138,7 @@ async def start_manual_retry(
     db: AsyncSession = Depends(get_db),
 ):
     try:
+        set_log_context(service_name="api", client_id=client["client_id"], job_id=str(id))
         return await job_service.start_manual_retry(
             id,
             client_id=client["client_id"],

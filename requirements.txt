@@ -30,6 +30,8 @@ Pygments==2.21.0
 pytest==8.4.2
 pytest-asyncio==1.2.0
 python-dotenv==1.2.1
+python-json-logger==4.0.0
+prometheus-client==0.26.0
 pytokens==0.4.1
 redis==7.0.1
 SQLAlchemy==2.0.57

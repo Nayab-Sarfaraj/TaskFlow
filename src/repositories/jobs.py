@@ -44,6 +44,7 @@ async def create_job(
     job: job_submission_request,
     client_id: str,
     idempotency_key: Optional[str] = None,
+    request_id: Optional[str] = None,
 ):
     fingerprint = generate_request_fingerprint(job)
     try:
@@ -56,6 +57,7 @@ async def create_job(
             )
             if existing_job is not None:
                 if existing_job.request_fingerprint == fingerprint:
+                    existing_job._taskflow_created_new = False
                     return existing_job
                 raise IdempotencyConflictError
 
@@ -72,6 +74,7 @@ async def create_job(
             )
             if existing_job is not None:
                 if existing_job.request_fingerprint == fingerprint:
+                    existing_job._taskflow_created_new = False
                     return existing_job
                 raise IdempotencyConflictError
 
@@ -81,6 +84,7 @@ async def create_job(
             priority=job.priority,
             max_attempts=job.max_retries + 1,
             client_id=client_id,
+            request_id=request_id,
             request_fingerprint=fingerprint,
         )
 
@@ -95,11 +99,14 @@ async def create_job(
             aggregate_id=new_job.id,
             event_type="job.created",
             payload=new_job.payload,
+            request_id=request_id,
+            client_id=client_id,
         )
 
         db.add(outbox_event)
         await db.commit()
         await db.refresh(new_job)
+        new_job._taskflow_created_new = True
 
         return new_job
 
@@ -121,6 +128,7 @@ async def create_job(
             existing_job = result.scalar_one_or_none()
 
             if existing_job and existing_job.request_fingerprint == fingerprint:
+                existing_job._taskflow_created_new = False
                 return existing_job
 
             if existing_job:
@@ -220,6 +228,8 @@ async def start_manual_retry(
                 aggregate_id=updated_job.id,
                 event_type="job.created",
                 payload=updated_job.payload,
+                request_id=updated_job.request_id,
+                client_id=updated_job.client_id,
             )
         )
         await db.commit()

@@ -9,7 +9,10 @@ from dotenv import load_dotenv
 from src.db.database import SessionLocal
 from src.services import outbox_event as outbox_event_service
 from src.config.redis import get_redis
-from src.logging_config import configure_root_logger
+from src.logging_config import configure_root_logger, log_context
+from src.core.metrics import queue_depth
+from src.models.jobs import Job, JobStatus
+from sqlalchemy import func, select
 
 logger = logging.getLogger(__name__)
 load_dotenv()
@@ -37,10 +40,23 @@ async def available_publish_capacity(redis) -> int:
 
 
 async def publisher():
+    logger.info("Publisher started", extra={"service_name": "publisher"})
     while True:
         async with SessionLocal() as db:
             try:
                 available_capacity = await available_publish_capacity(redis_client)
+                pending_count = await db.scalar(
+                    select(func.count(Job.id)).where(
+                        Job.status.in_((JobStatus.QUEUED, JobStatus.RETRYING))
+                    )
+                )
+                redis_backlog = await redis_client.xpending(
+                    REDIS_STREAM, REDIS_CONSUMER_GROUP
+                )
+                queue_depth.labels(status="postgres_pending").set(pending_count or 0)
+                queue_depth.labels(status="redis_stream_backlog").set(
+                    int(redis_backlog.get("pending", 0))
+                )
 
                 if available_capacity <= 0:
                     logger.info(
@@ -60,8 +76,11 @@ async def publisher():
                         "job_id": str(event.aggregate_id),
                         "event_id": str(event.id),
                         "event_type": event.event_type,
+                        "request_id": event.request_id,
+                        "client_id": event.client_id,
                     }
-                    message_id = await publish_event(REDIS_STREAM, payload)
+                    with log_context(service_name="publisher", job_id=str(event.aggregate_id), event_id=str(event.id), event_type=event.event_type):
+                        message_id = await publish_event(REDIS_STREAM, payload)
                     logger.info(
                         "Published outbox event %s for job %s to Redis as %s",
                         event.id,
@@ -80,7 +99,13 @@ async def publisher():
                     )
             except Exception as e:
                 await db.rollback()
-                logger.exception("Outbox publisher failed")
+                logger.exception(
+                    "Outbox publisher failed",
+                    extra={
+                        "error_category": type(e).__name__,
+                        "error_message": str(e),
+                    },
+                )
 
         await asyncio.sleep(1)
 

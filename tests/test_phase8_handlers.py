@@ -35,7 +35,9 @@ async def create_test_job(session, job_type, payload, priority=5):
 
 async def cleanup_test_jobs(session, job_ids):
     await session.execute(delete(JobOutput).where(JobOutput.job_id.in_(job_ids)))
-    await session.execute(delete(OutboxEvent).where(OutboxEvent.aggregate_id.in_(job_ids)))
+    await session.execute(
+        delete(OutboxEvent).where(OutboxEvent.aggregate_id.in_(job_ids))
+    )
     await session.execute(delete(Job).where(Job.id.in_(job_ids)))
     await session.commit()
 
@@ -76,8 +78,10 @@ async def test_email_results_persist_and_retry_only_failed_recipient(
     assert result == {"total": 2, "accepted": 2, "failed": 0, "uncertain": 0}
     assert sent == ["accepted@example.com", "retry@example.com", "retry@example.com"]
     outputs = (
-        await db_session.execute(select(JobOutput).where(JobOutput.job_id == job.id))
-    ).scalars().all()
+        (await db_session.execute(select(JobOutput).where(JobOutput.job_id == job.id)))
+        .scalars()
+        .all()
+    )
     assert {output.result["status"] for output in outputs} == {"succeeded"}
     await cleanup_test_jobs(db_session, [job.id])
 
@@ -92,8 +96,10 @@ async def test_invalid_email_payload_is_rejected_without_output(db_session):
     with pytest.raises(ValidationError):
         await email_module.send_bulk_email(job, SimpleNamespace(id=1, attempt_number=1))
     outputs = (
-        await db_session.execute(select(JobOutput).where(JobOutput.job_id == job.id))
-    ).scalars().all()
+        (await db_session.execute(select(JobOutput).where(JobOutput.job_id == job.id)))
+        .scalars()
+        .all()
+    )
     assert outputs == []
     await cleanup_test_jobs(db_session, [job.id])
 
@@ -103,7 +109,11 @@ async def test_handler_limits_and_ssrf_protection(db_session, monkeypatch):
     video_job = await create_test_job(
         db_session,
         JobType.VIDEO,
-        {"url": "https://example.com/video", "resolution": "1280x720", "download_size_bytes": 1},
+        {
+            "url": "https://example.com/video",
+            "resolution": "1280x720",
+            "download_size_bytes": 1,
+        },
     )
     monkeypatch.setattr(video_module, "VIDEO_MAX_DOWNLOAD_BYTES", 0)
     with pytest.raises(ValueError):
@@ -143,9 +153,17 @@ async def test_outbox_priority_selection_deduplicates_jobs(db_session):
             priority=priority,
         )
         job.status = JobStatus.QUEUED
-        db_session.add(OutboxEvent(aggregate_id=job.id, event_type="job.created", payload=job.payload))
+        db_session.add(
+            OutboxEvent(
+                aggregate_id=job.id, event_type="job.created", payload=job.payload
+            )
+        )
         jobs.append(job)
-    db_session.add(OutboxEvent(aggregate_id=jobs[0].id, event_type="job.created", payload=jobs[0].payload))
+    db_session.add(
+        OutboxEvent(
+            aggregate_id=jobs[0].id, event_type="job.created", payload=jobs[0].payload
+        )
+    )
     await db_session.commit()
 
     events = await fetch_unpublished_events(db_session)

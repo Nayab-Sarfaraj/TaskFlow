@@ -10,12 +10,8 @@ from src.models.job_attempts import JobAttempt
 from src.models.jobs import Job, JobType
 
 
-REPORT_MAX_SIZE_BYTES = int(
-    os.getenv("REPORT_MAX_SIZE_BYTES", str(50 * 1024 * 1024))
-)
-REPORT_MAX_EXECUTION_SECONDS = float(
-    os.getenv("REPORT_MAX_EXECUTION_SECONDS", "120")
-)
+REPORT_MAX_SIZE_BYTES = int(os.getenv("REPORT_MAX_SIZE_BYTES", str(50 * 1024 * 1024)))
+REPORT_MAX_EXECUTION_SECONDS = float(os.getenv("REPORT_MAX_EXECUTION_SECONDS", "120"))
 
 
 class ReportJobPayload(BaseModel):
