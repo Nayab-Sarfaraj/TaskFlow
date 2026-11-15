@@ -613,7 +613,23 @@ async def worker(
     active_tasks = set()
 
     while True:
-        await semaphore.acquire()
+        # FIX: Do not block forever on the concurrency semaphore during
+        # shutdown. A long-running job can hold the only slot while this
+        # loop waits for another one; waiting on both lets shutdown stop
+        # consumption immediately.
+        acquire_task = asyncio.create_task(semaphore.acquire())
+        shutdown_wait_task = asyncio.create_task(shutdown_event.wait())
+        done, _ = await asyncio.wait(
+            {acquire_task, shutdown_wait_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if shutdown_wait_task in done:
+            acquire_task.cancel()
+            await asyncio.gather(acquire_task, return_exceptions=True)
+            break
+        shutdown_wait_task.cancel()
+        await asyncio.gather(shutdown_wait_task, return_exceptions=True)
+
         if shutdown_event.is_set():
             semaphore.release()
             break
