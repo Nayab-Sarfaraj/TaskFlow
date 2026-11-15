@@ -1,3 +1,4 @@
+import os
 from datetime import datetime, timezone
 
 from src.models.jobs import Job
@@ -10,13 +11,32 @@ from src.exceptions import (
     JobCreationError,
     JobRetryConflictError,
     JobRetryError,
+    QueueCapacityExceeded,
 )
 from typing import Optional
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select, text, update
 from src.models.jobs import JobStatus, JobType
 from src.utils.hash import generate_request_fingerprint
 from src.config.retry import RetryPolicy
+
+
+MAX_PENDING_JOBS = int(os.getenv("MAX_PENDING_JOBS", "1000"))
+PENDING_CAPACITY_LOCK_KEY = "taskflow:pending-job-capacity"
+
+
+async def _lock_and_check_pending_capacity(db: AsyncSession) -> None:
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
+        {"lock_key": PENDING_CAPACITY_LOCK_KEY},
+    )
+    pending_count = await db.scalar(
+        select(func.count(Job.id)).where(
+            Job.status.in_([JobStatus.QUEUED, JobStatus.RETRYING])
+        )
+    )
+    if pending_count >= MAX_PENDING_JOBS:
+        raise QueueCapacityExceeded
 
 
 async def create_job(
@@ -27,6 +47,34 @@ async def create_job(
 ):
     fingerprint = generate_request_fingerprint(job)
     try:
+        if idempotency_key is not None:
+            existing_job = await db.scalar(
+                select(Job).where(
+                    Job.client_id == client_id,
+                    Job.idempotency_key == idempotency_key,
+                )
+            )
+            if existing_job is not None:
+                if existing_job.request_fingerprint == fingerprint:
+                    return existing_job
+                raise IdempotencyConflictError
+
+        await _lock_and_check_pending_capacity(db)
+
+        # Recheck after acquiring the lock so concurrent identical requests
+        # cannot both pass the initial idempotency lookup.
+        if idempotency_key is not None:
+            existing_job = await db.scalar(
+                select(Job).where(
+                    Job.client_id == client_id,
+                    Job.idempotency_key == idempotency_key,
+                )
+            )
+            if existing_job is not None:
+                if existing_job.request_fingerprint == fingerprint:
+                    return existing_job
+                raise IdempotencyConflictError
+
         new_job = Job(
             job_type=job.job_type,
             payload=job.payload,
@@ -55,6 +103,12 @@ async def create_job(
 
         return new_job
 
+    except QueueCapacityExceeded:
+        await db.rollback()
+        raise
+    except IdempotencyConflictError:
+        await db.rollback()
+        raise
     except IntegrityError as exc:
         await db.rollback()
 
@@ -124,6 +178,7 @@ async def start_manual_retry(
     client_id: str,
 ):
     try:
+        await _lock_and_check_pending_capacity(db)
         statement = (
             update(Job)
             .where(
@@ -171,6 +226,9 @@ async def start_manual_retry(
         await db.refresh(updated_job)
         return updated_job
     except JobRetryConflictError:
+        raise
+    except QueueCapacityExceeded:
+        await db.rollback()
         raise
     except Exception as exc:
         await db.rollback()

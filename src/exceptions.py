@@ -2,6 +2,12 @@ class JobCreationError(Exception):
     """Raised when a job and its outbox event cannot be created."""
 
 
+class QueueCapacityExceeded(Exception):
+    """Raised when the system-wide pending-job capacity is exhausted."""
+
+    retry_after_seconds = 10
+
+
 class IdempotencyConflictError(Exception):
     """Raised when an idempotency key is reused with different parameters."""
 
