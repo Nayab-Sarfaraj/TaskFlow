@@ -91,10 +91,12 @@ async def revoke_api_key(
 ) -> APIKey:
     try:
         result = await db.execute(
-            select(APIKey).where(
+            select(APIKey)
+            .where(
                 APIKey.id == key_id,
                 APIKey.client_id == client_id,
             )
+            .with_for_update()
         )
         api_key = result.scalar_one_or_none()
         if api_key is None:
