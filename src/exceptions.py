@@ -25,3 +25,11 @@ class JobRetryError(Exception):
 
 class ClientRegisterationError(Exception):
     pass
+
+
+class APIKeyNotFoundError(Exception):
+    """Raised when an API key is not found."""
+    pass
+
+
+KeyNotFoundError = APIKeyNotFoundError

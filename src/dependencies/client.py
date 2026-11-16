@@ -4,10 +4,13 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from dotenv import load_dotenv
 from fastapi import Depends, HTTPException, status
 from fastapi.security import APIKeyHeader
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+load_dotenv()
 
 from src.db.database import get_db
 from src.models.api_key import APIKey
@@ -69,7 +72,9 @@ async def get_current_client(
     return client
 
 
-def check_is_admin(x_admin_key: Optional[str] = Depends(admin_key_header)) -> None:
+async def check_is_admin(
+    x_admin_key: Optional[str] = Depends(admin_key_header),
+) -> None:
     configured_key = os.getenv("ADMIN_API_KEY")
     if not configured_key or not x_admin_key or not hmac.compare_digest(
         x_admin_key, configured_key

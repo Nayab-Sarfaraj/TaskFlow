@@ -36,3 +36,15 @@ class APIKeyCreateResponse(BaseModel):
     key_prefix: str
     created_at: datetime
     expires_at: Optional[datetime]
+
+
+class APIKeyResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    key_prefix: str
+    created_at: datetime
+    expires_at: Optional[datetime] = None
+    revoked_at: Optional[datetime] = None
+    last_used_at: Optional[datetime] = None

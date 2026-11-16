@@ -42,7 +42,7 @@ async def _lock_and_check_pending_capacity(db: AsyncSession) -> None:
 async def create_job(
     db: AsyncSession,
     job: job_submission_request,
-    client_id: str,
+    client_id: int,
     idempotency_key: Optional[str] = None,
     request_id: Optional[str] = None,
 ):
@@ -142,7 +142,7 @@ async def create_job(
 
 async def get_client_jobs(
     db: AsyncSession,
-    client_id: str,
+    client_id: int,
     limit: int,
     offset: int,
     status: Optional[JobStatus] = None,
@@ -171,7 +171,7 @@ async def get_client_jobs(
     return jobs, total
 
 
-async def get_job(db: AsyncSession, job_id: int, client_id: str):
+async def get_job(db: AsyncSession, job_id: int, client_id: int):
     statement = select(Job).where(
         Job.id == job_id,
         Job.client_id == client_id,
@@ -183,7 +183,7 @@ async def get_job(db: AsyncSession, job_id: int, client_id: str):
 async def start_manual_retry(
     db: AsyncSession,
     job_id: int,
-    client_id: str,
+    client_id: int,
 ):
     try:
         await _lock_and_check_pending_capacity(db)
