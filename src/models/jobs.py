@@ -23,6 +23,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 if TYPE_CHECKING:
     from src.models.job_attempts import JobAttempt
 
+if TYPE_CHECKING:
+    from src.models.client import Client
+
 
 class JobType(str, Enum):
     VIDEO = "video"
@@ -69,7 +72,7 @@ class Job(Base):
     payload: Mapped[Dict[str, object]] = mapped_column(JSONB, nullable=False)
     result: Mapped[Optional[Dict[str, object]]] = mapped_column(JSONB, nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    client_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    client_id: Mapped[int] = mapped_column(ForeignKey("clients.id"),nullable=False)
     request_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
     status: Mapped[JobStatus] = mapped_column(
         SAEnum(
@@ -148,4 +151,7 @@ class Job(Base):
     request_fingerprint: Mapped[Optional[str]] = mapped_column(
         String(64),
         nullable=True,
+    )
+    client:Mapped["Client"]=relationship(
+        back_populates="jobs"
     )

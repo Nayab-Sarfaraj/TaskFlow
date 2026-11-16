@@ -22,3 +22,6 @@ class JobRetryConflictError(Exception):
 
 class JobRetryError(Exception):
     """Raised when manually retrying a job cannot be committed."""
+
+class ClientRegisterationError(Exception):
+    pass

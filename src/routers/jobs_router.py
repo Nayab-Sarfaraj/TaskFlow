@@ -11,7 +11,7 @@ from src.schemas.jobs import (
     job_response,
     get_client_jobs_response,
 )
-from src.dependencies.client import authenticate_client
+from src.dependencies.client import get_current_client
 from src.services.rate_limiter import check_rate_limit
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.db.database import get_db
@@ -25,6 +25,7 @@ from src.exceptions import (
     QueueCapacityExceeded,
 )
 from src.models.jobs import JobStatus, JobType
+from src.models.client import Client
 from typing import Optional
 from fastapi import Query
 from src.logging_config import set_log_context
@@ -54,13 +55,13 @@ async def submit_job(
     request: Request,
     job_request: job_submission_request,
     idempotency_key: Optional[str] = Header(default=None),
-    client: dict = Depends(authenticate_client),
+    client: Client = Depends(get_current_client),
     db: AsyncSession = Depends(get_db),
     redis_client=Depends(get_rate_limit_redis),
 ):
     try:
 
-        client_id = client["client_id"]
+        client_id = client.id
         set_log_context(service_name="api", client_id=client_id)
         await check_rate_limit(redis_client, client_id)
         request_id = getattr(request.state, "request_id", None)
@@ -105,14 +106,14 @@ async def get_client_jobs(
     offset: int = Query(default=0, ge=0),
     status: Optional[JobStatus] = None,
     job_type: Optional[JobType] = None,
-    client: dict = Depends(authenticate_client),
+    client: Client = Depends(get_current_client),
     db: AsyncSession = Depends(get_db),
 ):
 
-    set_log_context(service_name="api", client_id=client["client_id"])
+    set_log_context(service_name="api", client_id=client.id)
     return await job_service.get_client_jobs(
         db,
-        client_id=client["client_id"],
+        client_id=client.id,
         limit=limit,
         offset=offset,
         status=status,
@@ -127,14 +128,14 @@ async def get_client_jobs(
 )
 async def get_job(
     job_id: int,
-    client: dict = Depends(authenticate_client),
+    client: Client = Depends(get_current_client),
     db: AsyncSession = Depends(get_db),
 ):
-    set_log_context(service_name="api", client_id=client["client_id"], job_id=str(job_id))
+    set_log_context(service_name="api", client_id=client.id, job_id=str(job_id))
     job = await job_service.get_job(
         db,
         job_id=job_id,
-        client_id=client["client_id"],
+        client_id=client.id,
     )
     if job is None:
         raise HTTPException(
@@ -151,14 +152,14 @@ async def get_job(
 )
 async def start_manual_retry(
     id: int,
-    client: dict = Depends(authenticate_client),
+    client: Client = Depends(get_current_client),
     db: AsyncSession = Depends(get_db),
 ):
     try:
-        set_log_context(service_name="api", client_id=client["client_id"], job_id=str(id))
+        set_log_context(service_name="api", client_id=client.id, job_id=str(id))
         return await job_service.start_manual_retry(
             id,
-            client_id=client["client_id"],
+            client_id=client.id,
             db=db,
         )
     except JobRetryNotFoundError:
