@@ -18,6 +18,8 @@ from src.models.workers import Worker, WorkerStatus
 from src.routers.health import router as health_router
 from src.routers.jobs_router import router as job_router
 from src.logging_config import configure_uvicorn_logging, log_context
+from src.routers.client import router as client_router
+from src.routers.api_keys import router as api_keys_router
 
 configure_uvicorn_logging()
 
@@ -89,3 +91,5 @@ def read_root():
 
 app.include_router(router=job_router, prefix="/api/v1/jobs")
 app.include_router(router=health_router, prefix="/health")
+app.include_router(router=client_router, prefix="/api/v1/clients")
+app.include_router(router=api_keys_router, prefix="/api/v1/clients")

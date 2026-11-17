@@ -10,7 +10,7 @@ from src.core.metrics import jobs_submitted_total, job_type_value
 async def create_job(
     db: AsyncSession,
     job: job_submission_request,
-    client_id: str,
+    client_id: int,
     idempotency_key: Optional[str] = None,
     request_id: Optional[str] = None,
 ):
@@ -23,7 +23,7 @@ async def create_job(
 
 async def get_client_jobs(
     db: AsyncSession,
-    client_id: str,
+    client_id: int,
     limit: int,
     offset: int,
     status: Optional[JobStatus] = None,
@@ -46,13 +46,13 @@ async def get_client_jobs(
     )
 
 
-async def get_job(db: AsyncSession, job_id: int, client_id: str):
+async def get_job(db: AsyncSession, job_id: int, client_id: int):
     return await job_repository.get_job(db, job_id=job_id, client_id=client_id)
 
 
 async def start_manual_retry(
     job_id: int,
-    client_id: str,
+    client_id: int,
     db: AsyncSession,
 ):
     updated_job = await job_repository.start_manual_retry(
