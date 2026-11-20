@@ -28,9 +28,13 @@ async def setup_client_with_keys(db_session, monkeypatch):
     await db_session.refresh(client)
 
     # Key 1
-    key_1, raw_key_1 = await create_api_key(db_session, client_id=client.id, name="Active Key 1")
+    key_1, raw_key_1 = await create_api_key(
+        db_session, client_id=client.id, name="Active Key 1"
+    )
     # Key 2
-    key_2, raw_key_2 = await create_api_key(db_session, client_id=client.id, name="Active Key 2")
+    key_2, raw_key_2 = await create_api_key(
+        db_session, client_id=client.id, name="Active Key 2"
+    )
     # Expired Key (expires 1 hour in the past)
     expired_time = datetime.now(timezone.utc) - timedelta(hours=1)
     key_expired, raw_key_expired = await create_api_key(
@@ -51,11 +55,19 @@ async def setup_client_with_keys(db_session, monkeypatch):
     }
 
     # Cleanup
-    job_ids = list((await db_session.scalars(select(Job.id).where(Job.client_id == client.id))).all())
+    job_ids = list(
+        (
+            await db_session.scalars(select(Job.id).where(Job.client_id == client.id))
+        ).all()
+    )
     if job_ids:
         await db_session.execute(delete(JobOutput).where(JobOutput.job_id.in_(job_ids)))
-        await db_session.execute(delete(JobAttempt).where(JobAttempt.job_id.in_(job_ids)))
-        await db_session.execute(delete(OutboxEvent).where(OutboxEvent.aggregate_id.in_(job_ids)))
+        await db_session.execute(
+            delete(JobAttempt).where(JobAttempt.job_id.in_(job_ids))
+        )
+        await db_session.execute(
+            delete(OutboxEvent).where(OutboxEvent.aggregate_id.in_(job_ids))
+        )
         await db_session.execute(delete(Job).where(Job.id.in_(job_ids)))
     await db_session.execute(delete(APIKey).where(APIKey.client_id == client.id))
     await db_session.execute(delete(Client).where(Client.id == client.id))
@@ -71,7 +83,9 @@ async def api_client():
 
 # 1. Two active keys authenticate successfully
 @pytest.mark.asyncio
-async def test_two_active_keys_authenticate_successfully(api_client, setup_client_with_keys):
+async def test_two_active_keys_authenticate_successfully(
+    api_client, setup_client_with_keys
+):
     raw_key_1 = setup_client_with_keys["raw_key_1"]
     raw_key_2 = setup_client_with_keys["raw_key_2"]
 
@@ -96,7 +110,9 @@ async def test_two_active_keys_authenticate_successfully(api_client, setup_clien
 
 # 2. Revoking one key doesn't affect the other
 @pytest.mark.asyncio
-async def test_revoking_one_key_does_not_affect_the_other(api_client, setup_client_with_keys):
+async def test_revoking_one_key_does_not_affect_the_other(
+    api_client, setup_client_with_keys
+):
     client = setup_client_with_keys["client"]
     key_1 = setup_client_with_keys["key_1"]
     raw_key_2 = setup_client_with_keys["raw_key_2"]
@@ -125,7 +141,9 @@ async def test_revoking_one_key_does_not_affect_the_other(api_client, setup_clie
 
 # 3. Revoked keys immediately fail subsequent authentication
 @pytest.mark.asyncio
-async def test_revoked_keys_immediately_fail_subsequent_authentication(api_client, setup_client_with_keys):
+async def test_revoked_keys_immediately_fail_subsequent_authentication(
+    api_client, setup_client_with_keys
+):
     client = setup_client_with_keys["client"]
     key_1 = setup_client_with_keys["key_1"]
     raw_key_1 = setup_client_with_keys["raw_key_1"]
@@ -156,7 +174,9 @@ async def test_revoked_keys_immediately_fail_subsequent_authentication(api_clien
 
 # 4. Repeated revocation returns 204
 @pytest.mark.asyncio
-async def test_repeated_revocation_returns_204(api_client, setup_client_with_keys, db_session):
+async def test_repeated_revocation_returns_204(
+    api_client, setup_client_with_keys, db_session
+):
     client = setup_client_with_keys["client"]
     key_2 = setup_client_with_keys["key_2"]
     headers = {"X-Admin-Key": ADMIN_KEY}
@@ -210,7 +230,9 @@ async def test_expired_keys_cannot_authenticate(api_client, setup_client_with_ke
 
 # 6. API key listings never expose hashes or secrets
 @pytest.mark.asyncio
-async def test_api_key_listings_never_expose_hashes_or_secrets(api_client, setup_client_with_keys):
+async def test_api_key_listings_never_expose_hashes_or_secrets(
+    api_client, setup_client_with_keys
+):
     client = setup_client_with_keys["client"]
     raw_key_1 = setup_client_with_keys["raw_key_1"]
 

@@ -15,7 +15,9 @@ async def test_two_recovery_cycles_only_transition_an_expired_lease_once():
     from src.db.database import SessionLocal
 
     async with SessionLocal() as db:
-        worker = Worker(id="failed-worker", status=WorkerStatus.OFFLINE, concurrency_limit=1)
+        worker = Worker(
+            id="failed-worker", status=WorkerStatus.OFFLINE, concurrency_limit=1
+        )
         job = Job(
             job_type=JobType.REPORT,
             payload={"report_type": "recovery-race", "format": "pdf"},

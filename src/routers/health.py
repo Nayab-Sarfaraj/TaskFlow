@@ -62,7 +62,9 @@ def _worker_health(worker: Worker, now: datetime) -> dict[str, Any]:
         heartbeat_age_seconds is not None
         and heartbeat_age_seconds <= WORKER_HEARTBEAT_TIMEOUT_SECONDS
     )
-    healthy = worker.status in (WorkerStatus.ACTIVE, WorkerStatus.DRAINING) and is_current
+    healthy = (
+        worker.status in (WorkerStatus.ACTIVE, WorkerStatus.DRAINING) and is_current
+    )
 
     return {
         "worker_id": worker.id,

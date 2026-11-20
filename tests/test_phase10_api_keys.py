@@ -29,12 +29,20 @@ async def setup_client_with_keys(db_session, monkeypatch):
     await db_session.refresh(client_b)
 
     # Client A gets 3 keys
-    key_a1, raw_a1 = await create_api_key(db_session, client_id=client_a.id, name="Production Key")
-    key_a2, raw_a2 = await create_api_key(db_session, client_id=client_a.id, name="Staging Key")
-    key_a3, raw_a3 = await create_api_key(db_session, client_id=client_a.id, name="CI/CD Key")
+    key_a1, raw_a1 = await create_api_key(
+        db_session, client_id=client_a.id, name="Production Key"
+    )
+    key_a2, raw_a2 = await create_api_key(
+        db_session, client_id=client_a.id, name="Staging Key"
+    )
+    key_a3, raw_a3 = await create_api_key(
+        db_session, client_id=client_a.id, name="CI/CD Key"
+    )
 
     # Client B gets 1 key
-    key_b1, raw_b1 = await create_api_key(db_session, client_id=client_b.id, name="Client B Key")
+    key_b1, raw_b1 = await create_api_key(
+        db_session, client_id=client_b.id, name="Client B Key"
+    )
 
     yield {
         "client_a": client_a,
@@ -52,12 +60,24 @@ async def setup_client_with_keys(db_session, monkeypatch):
     }
 
     # Cleanup jobs, outbox_events, keys, clients
-    job_ids = list((await db_session.scalars(select(Job.id).where(Job.client_id.in_([client_a.id, client_b.id])))).all())
+    job_ids = list(
+        (
+            await db_session.scalars(
+                select(Job.id).where(Job.client_id.in_([client_a.id, client_b.id]))
+            )
+        ).all()
+    )
     if job_ids:
-        await db_session.execute(delete(OutboxEvent).where(OutboxEvent.aggregate_id.in_(job_ids)))
+        await db_session.execute(
+            delete(OutboxEvent).where(OutboxEvent.aggregate_id.in_(job_ids))
+        )
         await db_session.execute(delete(Job).where(Job.id.in_(job_ids)))
-    await db_session.execute(delete(APIKey).where(APIKey.client_id.in_([client_a.id, client_b.id])))
-    await db_session.execute(delete(Client).where(Client.id.in_([client_a.id, client_b.id])))
+    await db_session.execute(
+        delete(APIKey).where(APIKey.client_id.in_([client_a.id, client_b.id]))
+    )
+    await db_session.execute(
+        delete(Client).where(Client.id.in_([client_a.id, client_b.id]))
+    )
     await db_session.commit()
 
 
@@ -70,7 +90,9 @@ async def api_client():
 
 # Checklist 1: List multiple API keys for one client
 @pytest.mark.asyncio
-async def test_list_multiple_api_keys_for_one_client(api_client, setup_client_with_keys):
+async def test_list_multiple_api_keys_for_one_client(
+    api_client, setup_client_with_keys
+):
     client_a = setup_client_with_keys["client_a"]
 
     response = await api_client.get(
@@ -87,7 +109,9 @@ async def test_list_multiple_api_keys_for_one_client(api_client, setup_client_wi
 
 # Checklist 2: Verify response never contains key_hash
 @pytest.mark.asyncio
-async def test_verify_response_never_contains_key_hash(api_client, setup_client_with_keys):
+async def test_verify_response_never_contains_key_hash(
+    api_client, setup_client_with_keys
+):
     client_a = setup_client_with_keys["client_a"]
     raw_a1 = setup_client_with_keys["raw_a1"]
 
@@ -121,7 +145,9 @@ async def test_verify_response_never_contains_key_hash(api_client, setup_client_
 
 # Checklist 3: Revoke key → authentication returns 401
 @pytest.mark.asyncio
-async def test_revoke_key_authentication_returns_401(api_client, setup_client_with_keys, db_session):
+async def test_revoke_key_authentication_returns_401(
+    api_client, setup_client_with_keys, db_session
+):
     client_a = setup_client_with_keys["client_a"]
     key_a1 = setup_client_with_keys["key_a1"]
     raw_a1 = setup_client_with_keys["raw_a1"]
@@ -185,7 +211,9 @@ async def test_other_active_keys_continue_working(api_client, setup_client_with_
 
 # Checklist 5: Revoke same key twice → both requests return 204
 @pytest.mark.asyncio
-async def test_revoke_same_key_twice_both_requests_return_204(api_client, setup_client_with_keys, db_session):
+async def test_revoke_same_key_twice_both_requests_return_204(
+    api_client, setup_client_with_keys, db_session
+):
     client_a = setup_client_with_keys["client_a"]
     key_a2 = setup_client_with_keys["key_a2"]
     headers = {"X-Admin-Key": ADMIN_KEY}
@@ -216,7 +244,9 @@ async def test_revoke_same_key_twice_both_requests_return_204(api_client, setup_
 
 # Checklist 6: Revoke another client's key → 404
 @pytest.mark.asyncio
-async def test_revoke_another_clients_key_returns_404(api_client, setup_client_with_keys, db_session):
+async def test_revoke_another_clients_key_returns_404(
+    api_client, setup_client_with_keys, db_session
+):
     client_b = setup_client_with_keys["client_b"]
     key_a1 = setup_client_with_keys["key_a1"]
     headers = {"X-Admin-Key": ADMIN_KEY}
@@ -259,7 +289,9 @@ async def test_no_admin_credentials_returns_401(api_client, setup_client_with_ke
 
 # Admin-only client registration and key generation tests
 @pytest.mark.asyncio
-async def test_admin_only_client_registration_and_key_generation(api_client, setup_client_with_keys, db_session):
+async def test_admin_only_client_registration_and_key_generation(
+    api_client, setup_client_with_keys, db_session
+):
     client_a = setup_client_with_keys["client_a"]
 
     # 1. Register client without admin key -> 401
@@ -321,7 +353,9 @@ async def test_admin_only_client_registration_and_key_generation(api_client, set
         assert len(get_keys_ok.json()) == 1
 
         # 9. DELETE /api/v1/clients/{client_id}/keys/{key_id} without admin key -> 401
-        del_key_fail = await api_client.delete(f"/api/v1/clients/{new_client_id}/keys/{new_key_id}")
+        del_key_fail = await api_client.delete(
+            f"/api/v1/clients/{new_client_id}/keys/{new_key_id}"
+        )
         assert del_key_fail.status_code == 401
 
         # 10. DELETE /api/v1/clients/{client_id}/keys/{key_id} with admin key -> 204
@@ -332,7 +366,8 @@ async def test_admin_only_client_registration_and_key_generation(api_client, set
         assert del_key_ok.status_code == 204
     finally:
         # Cleanup newly created client and keys
-        await db_session.execute(delete(APIKey).where(APIKey.client_id == new_client_id))
+        await db_session.execute(
+            delete(APIKey).where(APIKey.client_id == new_client_id)
+        )
         await db_session.execute(delete(Client).where(Client.id == new_client_id))
         await db_session.commit()
-

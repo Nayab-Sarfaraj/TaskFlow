@@ -41,14 +41,28 @@ async def test_clients_and_keys(db_session):
     }
 
     # Cleanup
-    job_ids = list((await db_session.scalars(select(Job.id).where(Job.client_id.in_([client_a.id, client_b.id])))).all())
+    job_ids = list(
+        (
+            await db_session.scalars(
+                select(Job.id).where(Job.client_id.in_([client_a.id, client_b.id]))
+            )
+        ).all()
+    )
     if job_ids:
         await db_session.execute(delete(JobOutput).where(JobOutput.job_id.in_(job_ids)))
-        await db_session.execute(delete(JobAttempt).where(JobAttempt.job_id.in_(job_ids)))
-        await db_session.execute(delete(OutboxEvent).where(OutboxEvent.aggregate_id.in_(job_ids)))
+        await db_session.execute(
+            delete(JobAttempt).where(JobAttempt.job_id.in_(job_ids))
+        )
+        await db_session.execute(
+            delete(OutboxEvent).where(OutboxEvent.aggregate_id.in_(job_ids))
+        )
         await db_session.execute(delete(Job).where(Job.id.in_(job_ids)))
-    await db_session.execute(delete(APIKey).where(APIKey.client_id.in_([client_a.id, client_b.id])))
-    await db_session.execute(delete(Client).where(Client.id.in_([client_a.id, client_b.id])))
+    await db_session.execute(
+        delete(APIKey).where(APIKey.client_id.in_([client_a.id, client_b.id]))
+    )
+    await db_session.execute(
+        delete(Client).where(Client.id.in_([client_a.id, client_b.id]))
+    )
     await db_session.commit()
 
 
@@ -61,7 +75,9 @@ async def api_client():
 
 # 1. Client A can create and retrieve its jobs
 @pytest.mark.asyncio
-async def test_client_a_can_create_and_retrieve_its_jobs(api_client, test_clients_and_keys, db_session):
+async def test_client_a_can_create_and_retrieve_its_jobs(
+    api_client, test_clients_and_keys, db_session
+):
     client_a = test_clients_and_keys["client_a"]
     headers_a = test_clients_and_keys["headers_a"]
 
@@ -114,7 +130,9 @@ async def test_client_b_cannot_retrieve_a_jobs(api_client, test_clients_and_keys
 
 # 3. Client B cannot cancel or retry A's jobs
 @pytest.mark.asyncio
-async def test_client_b_cannot_cancel_or_retry_a_jobs(api_client, test_clients_and_keys, db_session):
+async def test_client_b_cannot_cancel_or_retry_a_jobs(
+    api_client, test_clients_and_keys, db_session
+):
     headers_a = test_clients_and_keys["headers_a"]
     headers_b = test_clients_and_keys["headers_b"]
 
@@ -133,23 +151,31 @@ async def test_client_b_cannot_cancel_or_retry_a_jobs(api_client, test_clients_a
     await db_session.commit()
 
     # Client B attempts retry on Client A's job -> 404 Not Found
-    retry_resp_b = await api_client.post(f"/api/v1/jobs/{job_a_id}/retry", headers=headers_b)
+    retry_resp_b = await api_client.post(
+        f"/api/v1/jobs/{job_a_id}/retry", headers=headers_b
+    )
     assert retry_resp_b.status_code == 404
     assert retry_resp_b.json()["detail"] == "Failed job not found for this client."
 
     # Client B attempts cancel on Client A's job -> 404 Not Found
-    cancel_resp_b = await api_client.post(f"/api/v1/jobs/{job_a_id}/cancel", headers=headers_b)
+    cancel_resp_b = await api_client.post(
+        f"/api/v1/jobs/{job_a_id}/cancel", headers=headers_b
+    )
     assert cancel_resp_b.status_code == 404
 
     # Client A can successfully retry its own failed job -> 200 OK
-    retry_resp_a = await api_client.post(f"/api/v1/jobs/{job_a_id}/retry", headers=headers_a)
+    retry_resp_a = await api_client.post(
+        f"/api/v1/jobs/{job_a_id}/retry", headers=headers_a
+    )
     assert retry_resp_a.status_code == 200
     assert retry_resp_a.json()["status"] == "queued"
 
 
 # 4. Client B cannot access A's job attempts or results
 @pytest.mark.asyncio
-async def test_client_b_cannot_access_a_job_attempts_or_results(api_client, test_clients_and_keys, db_session):
+async def test_client_b_cannot_access_a_job_attempts_or_results(
+    api_client, test_clients_and_keys, db_session
+):
     headers_a = test_clients_and_keys["headers_a"]
     headers_b = test_clients_and_keys["headers_b"]
 
@@ -163,10 +189,14 @@ async def test_client_b_cannot_access_a_job_attempts_or_results(api_client, test
     job_a_id = create_resp.json()["id"]
 
     # Client B attempts to fetch attempts or results sub-resources -> 404
-    attempts_resp_b = await api_client.get(f"/api/v1/jobs/{job_a_id}/attempts", headers=headers_b)
+    attempts_resp_b = await api_client.get(
+        f"/api/v1/jobs/{job_a_id}/attempts", headers=headers_b
+    )
     assert attempts_resp_b.status_code == 404
 
-    results_resp_b = await api_client.get(f"/api/v1/jobs/{job_a_id}/results", headers=headers_b)
+    results_resp_b = await api_client.get(
+        f"/api/v1/jobs/{job_a_id}/results", headers=headers_b
+    )
     assert results_resp_b.status_code == 404
 
     # Furthermore, getting the job itself returns 404, preventing leaking any attempt/result metadata
@@ -176,18 +206,32 @@ async def test_client_b_cannot_access_a_job_attempts_or_results(api_client, test
 
 # 5. Job listings contain only authenticated client's jobs
 @pytest.mark.asyncio
-async def test_job_listings_contain_only_authenticated_client_jobs(api_client, test_clients_and_keys):
+async def test_job_listings_contain_only_authenticated_client_jobs(
+    api_client, test_clients_and_keys
+):
     headers_a = test_clients_and_keys["headers_a"]
     headers_b = test_clients_and_keys["headers_b"]
 
     # Client A creates 2 jobs
-    resp_a1 = await api_client.post("/api/v1/jobs/", headers=headers_a, json={"job_type": "report", "payload": {"idx": 1}})
-    resp_a2 = await api_client.post("/api/v1/jobs/", headers=headers_a, json={"job_type": "report", "payload": {"idx": 2}})
+    resp_a1 = await api_client.post(
+        "/api/v1/jobs/",
+        headers=headers_a,
+        json={"job_type": "report", "payload": {"idx": 1}},
+    )
+    resp_a2 = await api_client.post(
+        "/api/v1/jobs/",
+        headers=headers_a,
+        json={"job_type": "report", "payload": {"idx": 2}},
+    )
     job_a1_id = resp_a1.json()["id"]
     job_a2_id = resp_a2.json()["id"]
 
     # Client B creates 1 job
-    resp_b1 = await api_client.post("/api/v1/jobs/", headers=headers_b, json={"job_type": "report", "payload": {"idx": 3}})
+    resp_b1 = await api_client.post(
+        "/api/v1/jobs/",
+        headers=headers_b,
+        json={"job_type": "report", "payload": {"idx": 3}},
+    )
     job_b1_id = resp_b1.json()["id"]
 
     # Listing for Client A contains only A's jobs
@@ -209,7 +253,9 @@ async def test_job_listings_contain_only_authenticated_client_jobs(api_client, t
 
 # 6. Forged client_id cannot change job ownership
 @pytest.mark.asyncio
-async def test_forged_client_id_cannot_change_job_ownership(api_client, test_clients_and_keys, db_session):
+async def test_forged_client_id_cannot_change_job_ownership(
+    api_client, test_clients_and_keys, db_session
+):
     client_a = test_clients_and_keys["client_a"]
     client_b = test_clients_and_keys["client_b"]
     headers_b = test_clients_and_keys["headers_b"]
@@ -243,7 +289,9 @@ async def test_forged_client_id_cannot_change_job_ownership(api_client, test_cli
 
 # 7. Both clients can use the same idempotency key independently
 @pytest.mark.asyncio
-async def test_both_clients_can_use_same_idempotency_key_independently(api_client, test_clients_and_keys):
+async def test_both_clients_can_use_same_idempotency_key_independently(
+    api_client, test_clients_and_keys
+):
     headers_a = test_clients_and_keys["headers_a"]
     headers_b = test_clients_and_keys["headers_b"]
     shared_key = "cross-tenant-shared-idempotency-key-xyz"

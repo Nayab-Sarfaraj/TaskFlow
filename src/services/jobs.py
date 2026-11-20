@@ -15,7 +15,9 @@ async def create_job(
     request_id: Optional[str] = None,
 ):
 
-    result = await job_repository.create_job(db, job, client_id, idempotency_key, request_id)
+    result = await job_repository.create_job(
+        db, job, client_id, idempotency_key, request_id
+    )
     if getattr(result, "_taskflow_created_new", False):
         jobs_submitted_total.labels(job_type=job_type_value(job.job_type)).inc()
     return result

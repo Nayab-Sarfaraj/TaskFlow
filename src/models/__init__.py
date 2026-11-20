@@ -7,4 +7,12 @@ from src.models.client import Client
 
 from src.models.api_key import APIKey
 
-__all__ = ["Job", "JobAttempt", "JobOutput", "OutboxEvent", "Worker","Client","APIKey"]
+__all__ = [
+    "Job",
+    "JobAttempt",
+    "JobOutput",
+    "OutboxEvent",
+    "Worker",
+    "Client",
+    "APIKey",
+]

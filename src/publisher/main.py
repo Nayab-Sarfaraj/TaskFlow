@@ -50,9 +50,7 @@ async def publish_pending_events_once() -> list[int]:
                     Job.status.in_((JobStatus.QUEUED, JobStatus.RETRYING))
                 )
             )
-            redis_backlog = await redis.xpending(
-                REDIS_STREAM, REDIS_CONSUMER_GROUP
-            )
+            redis_backlog = await redis.xpending(REDIS_STREAM, REDIS_CONSUMER_GROUP)
             queue_depth.labels(status="postgres_pending").set(pending_count or 0)
             queue_depth.labels(status="redis_stream_backlog").set(
                 int(redis_backlog.get("pending", 0))
@@ -79,7 +77,12 @@ async def publish_pending_events_once() -> list[int]:
                     "request_id": event.request_id,
                     "client_id": event.client_id,
                 }
-                with log_context(service_name="publisher", job_id=str(event.aggregate_id), event_id=str(event.id), event_type=event.event_type):
+                with log_context(
+                    service_name="publisher",
+                    job_id=str(event.aggregate_id),
+                    event_id=str(event.id),
+                    event_type=event.event_type,
+                ):
                     message_id = await publish_event(REDIS_STREAM, payload, redis)
                 logger.info(
                     "Published outbox event %s for job %s to Redis as %s",

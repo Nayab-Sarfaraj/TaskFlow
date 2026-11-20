@@ -65,7 +65,9 @@ async def submit_job(
         set_log_context(service_name="api", client_id=client_id)
         await check_rate_limit(redis_client, client_id)
         request_id = getattr(request.state, "request_id", None)
-        return await job_service.create_job(db, job_request, client_id, idempotency_key, request_id)
+        return await job_service.create_job(
+            db, job_request, client_id, idempotency_key, request_id
+        )
     except IdempotencyConflictError:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

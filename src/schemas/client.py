@@ -2,6 +2,7 @@ from pydantic import BaseModel, Field, field_validator
 from src.models.client import ClientStatus
 from datetime import datetime
 
+
 class register_client_request(BaseModel):
     name: str = Field(min_length=1, max_length=150)
 
@@ -15,8 +16,9 @@ class register_client_request(BaseModel):
             raise ValueError("name cannot be empty or whitespace-only")
         return value
 
+
 class register_client_response(BaseModel):
-    id:int
-    name:str
-    status:ClientStatus
-    created_at:datetime
+    id: int
+    name: str
+    status: ClientStatus
+    created_at: datetime

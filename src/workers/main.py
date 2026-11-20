@@ -112,7 +112,14 @@ async def process_messages(messages, worker_id, redis_client):
                 event = json.loads(fields["event"])
                 job_id = int(event["job_id"])
                 event_type = event["event_type"]
-                set_log_context(service_name="worker", worker_id=str(worker_id), job_id=str(job_id), event_type=event_type, request_id=event.get("request_id"), client_id=event.get("client_id"))
+                set_log_context(
+                    service_name="worker",
+                    worker_id=str(worker_id),
+                    job_id=str(job_id),
+                    event_type=event_type,
+                    request_id=event.get("request_id"),
+                    client_id=event.get("client_id"),
+                )
 
                 async with SessionLocal() as db:
                     statement = (
@@ -145,7 +152,9 @@ async def process_messages(messages, worker_id, redis_client):
                             worker_id,
                             job_id,
                         )
-                        await redis_client.xack(stream_name, REDIS_CONSUMER_GROUP, message_id)
+                        await redis_client.xack(
+                            stream_name, REDIS_CONSUMER_GROUP, message_id
+                        )
                         continue
                     else:
                         job_type = updated_job.job_type
@@ -162,7 +171,10 @@ async def process_messages(messages, worker_id, redis_client):
                         db.add(attempt)
                         await db.flush()
                         attempt_id = attempt.id
-                        set_log_context(attempt_id=str(attempt_id), attempt_number=historical_attempt_number)
+                        set_log_context(
+                            attempt_id=str(attempt_id),
+                            attempt_number=historical_attempt_number,
+                        )
                         await db.execute(
                             update(Job)
                             .where(Job.id == job_id, Job.status == JobStatus.PROCESSING)
@@ -184,7 +196,12 @@ async def process_messages(messages, worker_id, redis_client):
                 active_jobs.labels(job_type=job_type_label).inc()
                 if updated_job.created_at is not None:
                     job_queue_wait_seconds.labels(job_type=job_type_label).observe(
-                        max(0.0, (datetime.now(timezone.utc) - updated_job.created_at).total_seconds())
+                        max(
+                            0.0,
+                            (
+                                datetime.now(timezone.utc) - updated_job.created_at
+                            ).total_seconds(),
+                        )
                     )
                 lease_renewal_task = asyncio.create_task(
                     lease_renewal(job_id=job_id, attempt_id=attempt_id)
@@ -285,7 +302,9 @@ async def process_messages(messages, worker_id, redis_client):
                 # A missing/non-queued job is intentionally acknowledged because
                 # there is no valid work left for this message.
                 try:
-                    await redis_client.xack(stream_name, REDIS_CONSUMER_GROUP, message_id)
+                    await redis_client.xack(
+                        stream_name, REDIS_CONSUMER_GROUP, message_id
+                    )
                 except Exception:
                     # The job is already durably complete. An ACK failure must
                     # not turn it into FAILED; leave the message pending for
@@ -395,7 +414,9 @@ async def process_messages(messages, worker_id, redis_client):
                                     )
 
                                 await db.commit()
-                            jobs_retried_total.labels(job_type=job_type_value(job_type)).inc()
+                            jobs_retried_total.labels(
+                                job_type=job_type_value(job_type)
+                            ).inc()
 
                         else:
                             partial_email_completion = isinstance(
@@ -529,7 +550,9 @@ async def process_messages(messages, worker_id, redis_client):
                         ).inc()
 
                     # Acknowledge only after both failure updates commit.
-                    await redis_client.xack(stream_name, REDIS_CONSUMER_GROUP, message_id)
+                    await redis_client.xack(
+                        stream_name, REDIS_CONSUMER_GROUP, message_id
+                    )
                     logger.info(
                         "Worker %s finalized job %s (attempt %s) after delivery handling",
                         worker_id,
@@ -635,13 +658,17 @@ async def recover_pending_messages(redis_client, worker_id):
                                 message_id,
                                 job_id,
                             )
-                            await redis_client.xack(REDIS_STREAM, REDIS_CONSUMER_GROUP, message_id)
+                            await redis_client.xack(
+                                REDIS_STREAM, REDIS_CONSUMER_GROUP, message_id
+                            )
                         elif job.status in (
                             JobStatus.COMPLETED,
                             JobStatus.FAILED,
                             JobStatus.CANCELLED,
                         ):
-                            await redis_client.xack(REDIS_STREAM, REDIS_CONSUMER_GROUP, message_id)
+                            await redis_client.xack(
+                                REDIS_STREAM, REDIS_CONSUMER_GROUP, message_id
+                            )
                         elif job.status == JobStatus.PROCESSING:
                             if job.lease_expires_at is not None and (
                                 job.lease_expires_at > datetime.now(timezone.utc)
@@ -657,7 +684,9 @@ async def recover_pending_messages(redis_client, worker_id):
                                     job_id,
                                 )
                         elif job.status == JobStatus.RETRYING:
-                            await redis_client.xack(REDIS_STREAM, REDIS_CONSUMER_GROUP, message_id)
+                            await redis_client.xack(
+                                REDIS_STREAM, REDIS_CONSUMER_GROUP, message_id
+                            )
                         elif job.status == JobStatus.QUEUED:
                             if job.scheduled_at is None or (
                                 job.scheduled_at <= datetime.now(timezone.utc)

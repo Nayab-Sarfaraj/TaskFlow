@@ -79,10 +79,25 @@ class TaskFlowContextFilter(logging.Filter):
         return True
 
 
-_SENSITIVE_KEYS = {"api_key", "authorization", "cookie", "password", "secret", "token", "payload", "data", "credentials"}
+_SENSITIVE_KEYS = {
+    "api_key",
+    "authorization",
+    "cookie",
+    "password",
+    "secret",
+    "token",
+    "payload",
+    "data",
+    "credentials",
+}
 _SENSITIVE_TEXT_PATTERNS = (
     (re.compile(r"(?i)(bearer\s+)[^\s,;]+"), r"\1[REDACTED]"),
-    (re.compile(r"(?i)(password|passwd|secret|token|api[_-]?key)(\s*[:=]\s*)[^\s,;&]+"), r"\1\2[REDACTED]"),
+    (
+        re.compile(
+            r"(?i)(password|passwd|secret|token|api[_-]?key)(\s*[:=]\s*)[^\s,;&]+"
+        ),
+        r"\1\2[REDACTED]",
+    ),
     (re.compile(r"(?i)(://[^:/?#]+:)[^@\s]+(@)"), r"\1[REDACTED]\2"),
 )
 
@@ -158,9 +173,12 @@ class TaskFlowJSONFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         timestamp = datetime.fromtimestamp(record.created, timezone.utc)
         payload: Dict[str, Any] = {
-            "timestamp": timestamp.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            "timestamp": timestamp.isoformat(timespec="milliseconds").replace(
+                "+00:00", "Z"
+            ),
             "level": record.levelname,
-            "service": getattr(record, "service_name", None) or _component_name(record.name),
+            "service": getattr(record, "service_name", None)
+            or _component_name(record.name),
             "event": _redact(getattr(record, "event", None) or record.getMessage()),
             "component": _component_name(record.name),
             "logger": record.name,
@@ -218,6 +236,7 @@ def log_context(**fields: Any):
 
         def __exit__(self, *_):
             _LOG_CONTEXT.reset(self._token)
+
     return _Context()
 
 

@@ -18,9 +18,7 @@ INTEGRATION_ENABLED = os.getenv("TASKFLOW_INTEGRATION") == "1"
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 REDIS_URL = os.getenv("REDIS_URL", "")
 REDIS_STREAM = os.getenv("TASKFLOW_REDIS_STREAM", "taskflow:integration:jobs")
-REDIS_GROUP = os.getenv(
-    "TASKFLOW_REDIS_CONSUMER_GROUP", "taskflow-integration-workers"
-)
+REDIS_GROUP = os.getenv("TASKFLOW_REDIS_CONSUMER_GROUP", "taskflow-integration-workers")
 
 
 def pytest_collection_modifyitems(config, items):

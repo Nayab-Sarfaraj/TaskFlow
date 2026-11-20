@@ -56,9 +56,7 @@ async def update_worker_heartbeat_ages() -> None:
 @app.get("/metrics", include_in_schema=False)
 async def metrics():
     await update_worker_heartbeat_ages()
-    multiprocess_dir = os.getenv(
-        "PROMETHEUS_MULTIPROC_DIR", "/tmp/taskflow-prometheus"
-    )
+    multiprocess_dir = os.getenv("PROMETHEUS_MULTIPROC_DIR", "/tmp/taskflow-prometheus")
     if multiprocess_dir:
         registry = CollectorRegistry()
         multiprocess.MultiProcessCollector(registry)
@@ -76,9 +74,24 @@ async def request_logging_middleware(request: Request, call_next):
     with log_context(request_id=request_id, service_name="api"):
         try:
             response = await call_next(request)
-            logger.info("HTTP request completed", extra={"status_code": response.status_code, "method": request.method, "path": request.url.path, "duration_ms": round((time.perf_counter() - started) * 1000, 2)})
+            logger.info(
+                "HTTP request completed",
+                extra={
+                    "status_code": response.status_code,
+                    "method": request.method,
+                    "path": request.url.path,
+                    "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+                },
+            )
         except Exception as exc:
-            logger.exception("HTTP request failed", extra={"error_category": type(exc).__name__, "method": request.method, "path": request.url.path})
+            logger.exception(
+                "HTTP request failed",
+                extra={
+                    "error_category": type(exc).__name__,
+                    "method": request.method,
+                    "path": request.url.path,
+                },
+            )
             raise
     response.headers["X-Request-ID"] = request_id
     return response

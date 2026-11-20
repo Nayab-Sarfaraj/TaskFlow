@@ -64,9 +64,8 @@ async def get_current_client(
         )
 
     # Throttle writes; an existing request transaction may commit this update.
-    if (
-        api_key.last_used_at is None
-        or now - api_key.last_used_at >= timedelta(minutes=5)
+    if api_key.last_used_at is None or now - api_key.last_used_at >= timedelta(
+        minutes=5
     ):
         api_key.last_used_at = now
     return client
@@ -76,8 +75,10 @@ async def check_is_admin(
     x_admin_key: Optional[str] = Depends(admin_key_header),
 ) -> None:
     configured_key = os.getenv("ADMIN_API_KEY")
-    if not configured_key or not x_admin_key or not hmac.compare_digest(
-        x_admin_key, configured_key
+    if (
+        not configured_key
+        or not x_admin_key
+        or not hmac.compare_digest(x_admin_key, configured_key)
     ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

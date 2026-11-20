@@ -55,12 +55,20 @@ async def setup_multi_clients(db_session, monkeypatch):
 
     # Teardown: Clean up DB tables and Redis rate-limiting keys
     job_ids = list(
-        (await db_session.scalars(select(Job.id).where(Job.client_id.in_(client_ids)))).all()
+        (
+            await db_session.scalars(
+                select(Job.id).where(Job.client_id.in_(client_ids))
+            )
+        ).all()
     )
     if job_ids:
         await db_session.execute(delete(JobOutput).where(JobOutput.job_id.in_(job_ids)))
-        await db_session.execute(delete(JobAttempt).where(JobAttempt.job_id.in_(job_ids)))
-        await db_session.execute(delete(OutboxEvent).where(OutboxEvent.aggregate_id.in_(job_ids)))
+        await db_session.execute(
+            delete(JobAttempt).where(JobAttempt.job_id.in_(job_ids))
+        )
+        await db_session.execute(
+            delete(OutboxEvent).where(OutboxEvent.aggregate_id.in_(job_ids))
+        )
         await db_session.execute(delete(Job).where(Job.id.in_(job_ids)))
 
     await db_session.execute(delete(APIKey).where(APIKey.client_id.in_(client_ids)))
@@ -123,7 +131,9 @@ async def test_100_concurrent_requests_resolve_correct_client_and_no_leakage(
     # Verification 1: No unexpected database connection-pool exhaustion (all 100 succeed with 201)
     created_jobs_by_client = {c.id: [] for c in clients}
     for c_idx, r_idx, resp in results:
-        assert resp.status_code == 201, f"Request failed: {resp.status_code} {resp.text}"
+        assert (
+            resp.status_code == 201
+        ), f"Request failed: {resp.status_code} {resp.text}"
         data = resp.json()
         job_id = data["id"]
         expected_client_id = clients[c_idx].id

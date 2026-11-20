@@ -72,8 +72,10 @@ class Job(Base):
     payload: Mapped[Dict[str, object]] = mapped_column(JSONB, nullable=False)
     result: Mapped[Optional[Dict[str, object]]] = mapped_column(JSONB, nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    client_id: Mapped[int] = mapped_column(ForeignKey("clients.id"),nullable=False)
-    request_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
+    client_id: Mapped[int] = mapped_column(ForeignKey("clients.id"), nullable=False)
+    request_id: Mapped[Optional[str]] = mapped_column(
+        String(100), nullable=True, index=True
+    )
     status: Mapped[JobStatus] = mapped_column(
         SAEnum(
             JobStatus,
@@ -152,6 +154,4 @@ class Job(Base):
         String(64),
         nullable=True,
     )
-    client:Mapped["Client"]=relationship(
-        back_populates="jobs"
-    )
+    client: Mapped["Client"] = relationship(back_populates="jobs")

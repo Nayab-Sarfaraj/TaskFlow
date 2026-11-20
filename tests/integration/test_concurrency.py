@@ -65,9 +65,19 @@ async def test_two_workers_cannot_claim_one_job_twice(integration_redis):
     async with SessionLocal() as db:
         job = await db.get(Job, job_id)
         assert job.status == JobStatus.COMPLETED
-        assert await db.scalar(
-            select(func.count()).select_from(JobAttempt).where(JobAttempt.job_id == job_id)
-        ) == 1
-        assert await db.scalar(
-            select(func.count()).select_from(JobOutput).where(JobOutput.job_id == job_id)
-        ) == 1
+        assert (
+            await db.scalar(
+                select(func.count())
+                .select_from(JobAttempt)
+                .where(JobAttempt.job_id == job_id)
+            )
+            == 1
+        )
+        assert (
+            await db.scalar(
+                select(func.count())
+                .select_from(JobOutput)
+                .where(JobOutput.job_id == job_id)
+            )
+            == 1
+        )

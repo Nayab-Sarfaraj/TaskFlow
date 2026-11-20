@@ -78,7 +78,10 @@ async def run_scheduler_cycle(limit: int = 100) -> int:
                 set_context.__exit__(None, None, None)
             except Exception:
                 await db.rollback()
-                logger.exception("Scheduler failed while requeueing a job", extra={"error_category": "SchedulerError"})
+                logger.exception(
+                    "Scheduler failed while requeueing a job",
+                    extra={"error_category": "SchedulerError"},
+                )
                 if "set_context" in locals():
                     set_context.__exit__(None, None, None)
     return dispatched

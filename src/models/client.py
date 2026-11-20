@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import TYPE_CHECKING, Optional,List
+from typing import TYPE_CHECKING, Optional, List
 
 from sqlalchemy import (
     DateTime,
@@ -12,25 +12,28 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
-    String
+    String,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.db.database import Base
 
-class ClientStatus(str,Enum):
-    ACTIVE="ACTIVE"
-    SUSPENDED="SUSPENDED"
+
+class ClientStatus(str, Enum):
+    ACTIVE = "ACTIVE"
+    SUSPENDED = "SUSPENDED"
+
 
 if TYPE_CHECKING:
     from src.models.jobs import Job
 if TYPE_CHECKING:
     from src.models.api_key import APIKey
 
+
 class Client(Base):
     __tablename__ = "clients"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    name:Mapped[str]=mapped_column(String(150),nullable=False)
+    name: Mapped[str] = mapped_column(String(150), nullable=False)
     status: Mapped[ClientStatus] = mapped_column(
         SAEnum(ClientStatus, name="client_status"),
         default=ClientStatus.ACTIVE,
@@ -50,13 +53,10 @@ class Client(Base):
         onupdate=func.now(),
         nullable=False,
     )
-    jobs:Mapped[List["Job"]]=relationship(
-        back_populates="client",
-        cascade="all,delete-orphan"
+    jobs: Mapped[List["Job"]] = relationship(
+        back_populates="client", cascade="all,delete-orphan"
     )
 
-    api_keys:Mapped[List["APIKey"]]=relationship(
-           back_populates="client",
-           cascade="all,delete-orphan"
-       )
-      
+    api_keys: Mapped[List["APIKey"]] = relationship(
+        back_populates="client", cascade="all,delete-orphan"
+    )

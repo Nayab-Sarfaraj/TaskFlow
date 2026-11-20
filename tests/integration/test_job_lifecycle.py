@@ -88,7 +88,9 @@ async def test_api_to_outbox_to_redis_to_worker_completion(integration_redis):
 
 
 @pytest.mark.asyncio
-async def test_duplicate_redis_delivery_does_not_duplicate_side_effects(integration_redis):
+async def test_duplicate_redis_delivery_does_not_duplicate_side_effects(
+    integration_redis,
+):
     await create_group(REDIS_STREAM, REDIS_CONSUMER_GROUP, integration_redis)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -118,13 +120,19 @@ async def test_duplicate_redis_delivery_does_not_duplicate_side_effects(integrat
     from src.db.database import SessionLocal
 
     async with SessionLocal() as db:
-        assert await db.scalar(
-            select(func.count()).select_from(JobAttempt).where(
-                JobAttempt.job_id == submitted["id"]
+        assert (
+            await db.scalar(
+                select(func.count())
+                .select_from(JobAttempt)
+                .where(JobAttempt.job_id == submitted["id"])
             )
-        ) == 1
-        assert await db.scalar(
-            select(func.count()).select_from(JobOutput).where(
-                JobOutput.job_id == submitted["id"]
+            == 1
+        )
+        assert (
+            await db.scalar(
+                select(func.count())
+                .select_from(JobOutput)
+                .where(JobOutput.job_id == submitted["id"])
             )
-        ) == 1
+            == 1
+        )

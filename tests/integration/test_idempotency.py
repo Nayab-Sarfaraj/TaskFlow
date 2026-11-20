@@ -35,11 +35,17 @@ async def test_same_client_and_idempotency_key_create_one_job_and_outbox_event()
 
     async with SessionLocal() as db:
         job_id = first.json()["id"]
-        assert await db.scalar(
-            select(func.count()).select_from(Job).where(Job.id == job_id)
-        ) == 1
-        assert await db.scalar(
-            select(func.count()).select_from(OutboxEvent).where(
-                OutboxEvent.aggregate_id == job_id
+        assert (
+            await db.scalar(
+                select(func.count()).select_from(Job).where(Job.id == job_id)
             )
-        ) == 1
+            == 1
+        )
+        assert (
+            await db.scalar(
+                select(func.count())
+                .select_from(OutboxEvent)
+                .where(OutboxEvent.aggregate_id == job_id)
+            )
+            == 1
+        )

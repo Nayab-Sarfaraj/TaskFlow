@@ -42,7 +42,14 @@ async def register_worker(worker_id: str, concurrency_limit: int):
             await db.commit()
             logger.info("Registered worker %s", worker_id)
         except Exception as e:
-            logger.warning("Worker registration failed", extra={"service_name": "worker", "worker_id": worker_id, "error_category": type(e).__name__})
+            logger.warning(
+                "Worker registration failed",
+                extra={
+                    "service_name": "worker",
+                    "worker_id": worker_id,
+                    "error_category": type(e).__name__,
+                },
+            )
 
             await db.rollback()
             raise WorkerRegisterationError
@@ -75,7 +82,14 @@ async def heart_beat_look(worker_id: str):
 
         except Exception as exc:
             failure_count = failure_count + 1
-            logger.exception("Heartbeat failed", extra={"service_name": "worker", "worker_id": worker_id, "error_category": type(exc).__name__})
+            logger.exception(
+                "Heartbeat failed",
+                extra={
+                    "service_name": "worker",
+                    "worker_id": worker_id,
+                    "error_category": type(exc).__name__,
+                },
+            )
         finally:
             if failure_count >= FAILURE_THRESHOLD:
                 raise HeartBeatError
